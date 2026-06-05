@@ -51,6 +51,14 @@ export function activate(ctx: vscode.ExtensionContext) {
     decorationType,
     vscode.window.onDidChangeTextEditorSelection((e) => scheduleUpdate(e.textEditor)),
     vscode.window.onDidChangeActiveTextEditor((e) => e && scheduleUpdate(e)),
+    vscode.workspace.onDidChangeTextDocument((e) => {
+      const ed = vscode.window.activeTextEditor
+      if (ed?.document !== e.document) return
+      lastActiveLine = -1
+      lastActiveFile = ''
+      if (e.document.isDirty) ed.setDecorations(decorationType, [])
+      else scheduleUpdate(ed)
+    }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       invalidateFile(doc.uri.fsPath)
       const ed = vscode.window.activeTextEditor
@@ -103,7 +111,7 @@ function scheduleUpdate(editor: vscode.TextEditor) {
 }
 
 async function updateDecoration(editor: vscode.TextEditor) {
-  if (!enabled || editor.document.uri.scheme !== 'file') {
+  if (!enabled || editor.document.uri.scheme !== 'file' || editor.document.isDirty) {
     editor.setDecorations(decorationType, [])
     lastActiveLine = -1
     lastActiveFile = ''
