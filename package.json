@@ -1,0 +1,58 @@
+{
+  "name": "culprit",
+  "displayName": "Culprit",
+  "description": "Lightweight inline git blame -- shows author and date per line, hover for recent file commits, click to view diff.",
+  "version": "1.1.0",
+  "publisher": "goeselt",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/goeselt/culprit.git"
+  },
+  "engines": {
+    "vscode": "^1.120.0"
+  },
+  "categories": [
+    "SCM Providers"
+  ],
+  "activationEvents": [
+    "onStartupFinished"
+  ],
+  "main": "./out/extension.js",
+  "contributes": {
+    "commands": [
+      {
+        "command": "culprit.showDiff",
+        "title": "Culprit: Show Commit Diff"
+      },
+      {
+        "command": "culprit.toggle",
+        "title": "Culprit: Toggle Inline Blame"
+      }
+    ],
+    "configuration": {
+      "title": "Culprit",
+      "properties": {
+        "culprit.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Enable inline blame annotations."
+        }
+      }
+    }
+  },
+  "scripts": {
+    "build": "node esbuild.mjs",
+    "typecheck": "tsc --noEmit",
+    "verify": "npm run typecheck && npm run build",
+    "vscode-engine": "VSCODE_API=\"$(npm view @types/vscode version)\" && npm pkg set \"engines.vscode=^${VSCODE_API}\"",
+    "update": "npm run vscode-engine && npm install",
+    "package": "npx --yes --package @vscode/vsce vsce package --no-dependencies"
+  },
+  "devDependencies": {
+    "@types/node": "*",
+    "@types/vscode": "*",
+    "esbuild": "*",
+    "typescript": "*"
+  }
+}
