@@ -2,7 +2,7 @@
   "name": "culprit",
   "displayName": "Culprit",
   "description": "Lightweight inline git blame -- shows author and date per line, hover for recent file commits, click to view diff.",
-  "version": "1.1.0",
+  "version": "1.2.1",
   "publisher": "goeselt",
   "license": "MIT",
   "repository": {
