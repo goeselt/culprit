@@ -54,9 +54,9 @@ jobs:
         if: steps.bumpkin.outputs.release-needed == 'true'
         run: npm ci
 
-      - name: Update VS Code Engine
+      - name: Update
         if: steps.bumpkin.outputs.release-needed == 'true'
-        run: npm run vscode-engine
+        run: npm run update
 
       - name: Typecheck
         if: steps.bumpkin.outputs.release-needed == 'true'
