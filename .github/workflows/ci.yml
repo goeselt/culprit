@@ -3,6 +3,7 @@ name: CI
 
 on:
   pull_request:
+    types: [opened, synchronize, reopened, edited]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -55,6 +56,6 @@ jobs:
         run: npm run build
 
       - name: Pedant
-        uses: goeselt/pedant@1ba1298d0fb09c9a83e161686d6fdd0029ca8897 # v1.1.0
+        uses: goeselt/pedant@dbb8852f9f6cbb107f989688b1d5d654aa44354b # v1.0.1
         with:
           ignore: out/
