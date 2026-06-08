@@ -22,6 +22,7 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
+      contents: write
       id-token: write
       attestations: write
     steps:
@@ -87,27 +88,17 @@ jobs:
         with:
           subject-path: ${{ steps.pkg.outputs.vsix }}
 
-      - name: Import Signing Key
-        if: steps.bumpkin.outputs.release-needed == 'true'
-        env:
-          SIGNING_KEY: ${{ secrets.RELEASE_SIGNING_KEY }}
-        run: echo "$SIGNING_KEY" | base64 -d | gpg --import --batch
-
       - name: Commit Version Bump
         if: steps.bumpkin.outputs.release-needed == 'true'
-        env:
-          VERSION: ${{ steps.bumpkin.outputs.next-version }}
-          GIT_USER_NAME: ${{ vars.RELEASE_SIGNING_USER }}
-          GIT_USER_EMAIL: ${{ vars.RELEASE_SIGNING_EMAIL }}
-        run: |
-          git config user.name "$GIT_USER_NAME"
-          git config user.email "$GIT_USER_EMAIL"
-          git config commit.gpgsign true
-          git add package.json package-lock.json
-          if ! git diff --staged --quiet; then
-            git commit -m "chore(version): release v${VERSION} [skip ci]"
-            git push
-          fi
+        uses: goeselt/scribe@2dde3d76f0a8c6de2974c223b6dd562756fa872e # v1.1.0
+        with:
+          files: |
+            package.json
+            package-lock.json
+          message: 'chore(version): release v${{ steps.bumpkin.outputs.next-version }}'
+          git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
+          git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
+          signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
 
       - name: Ship
         if: steps.bumpkin.outputs.release-needed == 'true'
