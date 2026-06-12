@@ -102,7 +102,7 @@ jobs:
 
       - name: Ship
         if: steps.bumpkin.outputs.release-needed == 'true'
-        uses: goeselt/shipit@8aad8bac87ba6757859e510db9d08bb49adb30fa # v1.0.1
+        uses: goeselt/shipit@54c7a651030061bb138975718850d0248ac683a9 # v1.0.2
         with:
           release-tag: ${{ steps.bumpkin.outputs.release-tag }}
           major-tag: ${{ steps.bumpkin.outputs.major-tag }}
