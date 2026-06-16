@@ -9,6 +9,10 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    groups:
+      all:
+        patterns:
+          - '*'
 
   - package-ecosystem: npm
     directory: /
@@ -17,3 +21,7 @@ updates:
     commit-message:
       prefix: chore
       include: scope
+    groups:
+      all:
+        patterns:
+          - '*'
