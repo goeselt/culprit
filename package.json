@@ -15,10 +15,17 @@
   "categories": [
     "SCM Providers"
   ],
+  "extensionKind": [
+    "workspace"
+  ],
   "capabilities": {
     "untrustedWorkspaces": {
       "supported": false,
       "description": "Culprit runs local Git commands for the active workspace and is disabled until the workspace is trusted."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Culprit requires local Git metadata and a file-backed workspace."
     }
   },
   "activationEvents": [
@@ -97,6 +104,13 @@
           "minimum": 60,
           "maximum": 300,
           "description": "Maximum total length of the inline blame annotation after formatting."
+        },
+        "culprit.maxFileLines": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum file size, in lines, that Culprit will automatically blame."
         }
       }
     }

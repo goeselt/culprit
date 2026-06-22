@@ -52,6 +52,7 @@ Extension settings:
 | `culprit.locale`              | ``                                 | Locale for absolute dates; empty uses VS Code default. |
 | `culprit.summaryMaxLength`    | `50`                               | Maximum commit summary length.                        |
 | `culprit.inlineMaxLength`     | `140`                              | Maximum total inline annotation length.               |
+| `culprit.maxFileLines`        | `10000`                            | Maximum file size Culprit will automatically blame.   |
 
 Supported format tokens: `${sha}`, `${fullSha}`, `${author}`, `${date}`, `${summary}`, `${range}`.
 

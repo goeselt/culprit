@@ -43,6 +43,9 @@ const MAX_SUMMARY_MAX_LENGTH = 200
 const DEFAULT_INLINE_MAX_LENGTH = 140
 const MIN_INLINE_MAX_LENGTH = 60
 const MAX_INLINE_MAX_LENGTH = 300
+const DEFAULT_MAX_FILE_LINES = 10_000
+const MIN_MAX_FILE_LINES = 1_000
+const MAX_MAX_FILE_LINES = 100_000
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
@@ -51,6 +54,7 @@ type Settings = DisplaySettings & {
   ignoreRevsEnabled: boolean
   ignoreRevsFile: string
   inlineFormat: string
+  maxFileLines: number
 }
 
 const blameCache = new Map<string, CacheEntry<FileBlame>>()
@@ -170,13 +174,20 @@ async function updateDecoration(editor: vscode.TextEditor) {
 
   const path = editor.document.uri.fsPath
   const activeLine = editor.selection.active.line + 1
+  const settings = readSettings()
+
+  if (editor.document.lineCount > settings.maxFileLines) {
+    clearEditorDecorations(editor)
+    resetActivePosition()
+    return
+  }
 
   if (path === lastActiveFile && activeLine === lastActiveLine) return
 
   clearInactiveEditorDecorations(editor)
   clearEditorDecorations(editor)
 
-  const blame = await getFileBlame(path)
+  const blame = await getFileBlame(path, settings)
   const info = blame.get(activeLine)
   const current = vscode.window.activeTextEditor
   if (current !== editor || editor.selection.active.line + 1 !== activeLine) return
@@ -201,7 +212,7 @@ async function updateDecoration(editor: vscode.TextEditor) {
 
 // Git data access -----------------------------------------------------------
 
-function getFileBlame(path: string): Promise<FileBlame> {
+function getFileBlame(path: string, settings: Settings): Promise<FileBlame> {
   const cached = getCachedEntry(blameCache, path)
   if (cached) return Promise.resolve(cached.data)
 
@@ -209,7 +220,6 @@ function getFileBlame(path: string): Promise<FileBlame> {
   if (inFlight) return inFlight
 
   const generation = cacheGeneration
-  const settings = readSettings()
   const promise = blameOptions(path, settings)
     .then((options) => blameFile(path, options))
     .then((data) => {
@@ -419,6 +429,13 @@ function readSettings(): Settings {
       MAX_INLINE_MAX_LENGTH,
     ),
     inlineFormat: cfg.get<string>('inlineFormat', DEFAULT_INLINE_FORMAT),
+    maxFileLines: readNumberSetting(
+      cfg,
+      'maxFileLines',
+      DEFAULT_MAX_FILE_LINES,
+      MIN_MAX_FILE_LINES,
+      MAX_MAX_FILE_LINES,
+    ),
   }
 }
 
