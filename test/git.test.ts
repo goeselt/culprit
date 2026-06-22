@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -87,6 +87,35 @@ test('blameFile accepts a configured ignore-revs file when present', async () =>
     assert.equal(blame.size, 1)
     assert.equal(await defaultIgnoreRevsFile(repo.file, '.git-blame-ignore-revs'), ignoreRevs)
     assert.equal(await defaultIgnoreRevsFile(repo.file, '../outside'), undefined)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+  }
+})
+
+test('blameFile does not execute configured textconv commands', async () => {
+  const repo = createRepo()
+  const marker = join(repo.dir, 'textconv-ran')
+  const textconv = join(repo.dir, 'textconv.js')
+
+  try {
+    writeFileSync(join(repo.dir, '.gitattributes'), '*.txt diff=evil\n')
+    writeFileSync(
+      textconv,
+      [
+        "const { readFileSync, writeFileSync } = require('node:fs')",
+        `writeFileSync(${JSON.stringify(marker)}, 'executed')`,
+        "process.stdout.write(readFileSync(process.argv[2], 'utf8'))",
+        '',
+      ].join('\n'),
+    )
+    git(repo.dir, ['add', '.gitattributes'])
+    git(repo.dir, ['commit', '--quiet', '-m', 'configure textconv'])
+    git(repo.dir, ['config', 'diff.evil.textconv', `node ${JSON.stringify(textconv)}`])
+
+    const blame = await blameFile(repo.file)
+
+    assert.equal(blame.size, 1)
+    assert.equal(existsSync(marker), false)
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
   }

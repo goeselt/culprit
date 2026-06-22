@@ -57,7 +57,7 @@ function run(args: string[], cwd: string): Promise<string> {
  */
 export async function blameFile(filePath: string, options: BlameOptions = {}): Promise<Map<number, BlameInfo>> {
   const cwd = dirname(filePath)
-  const args = ['blame', '--porcelain']
+  const args = ['blame', '--porcelain', '--no-textconv']
 
   if (options.ignoreRevsFile) {
     const ignoreRevsFile = await usableIgnoreRevsFile(options.ignoreRevsFile)
