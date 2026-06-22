@@ -26,8 +26,12 @@ export interface TemplateContext {
 }
 
 const ELLIPSIS = '...'
+const NO_COMMIT_SUMMARY = 'No commit summary'
+const UNKNOWN_AUTHOR = 'Unknown author'
 const BIDI_CONTROL_RE = /[\u202A-\u202E\u2066-\u2069]/g
 const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
+
+// Inline annotation formatting ---------------------------------------------
 
 export function formatTemplate(template: string, context: TemplateContext, settings: DisplaySettings): string {
   const values: Record<string, string> = {
@@ -35,7 +39,7 @@ export function formatTemplate(template: string, context: TemplateContext, setti
     fullSha: context.info.sha,
     author: formatAuthor(context.info, settings),
     date: formatDate(context.info.date, settings),
-    summary: firstLine(context.info.summary, settings.summaryMaxLength, 'No commit summary'),
+    summary: firstLine(context.info.summary, settings.summaryMaxLength, NO_COMMIT_SUMMARY),
     range: context.range.start === context.range.end ? `${context.range.start}` : `${context.range.start}-${context.range.end}`,
   }
 
@@ -43,15 +47,17 @@ export function formatTemplate(template: string, context: TemplateContext, setti
   return truncateText(tidyFormattedText(normalizeDisplayText(formatted)), settings.inlineMaxLength)
 }
 
+// Commit metadata formatting ------------------------------------------------
+
 export function formatAuthor(entry: Pick<DisplayEntry, 'author' | 'authorEmail'>, settings: Pick<DisplaySettings, 'authorFormat'>): string {
   if (settings.authorFormat === 'hidden') return ''
 
   const author = normalizeDisplayText(entry.author)
   const email = normalizeDisplayText(entry.authorEmail)
 
-  if (settings.authorFormat === 'email') return email || author || 'Unknown author'
-  if (settings.authorFormat === 'first') return author.split(/\s+/)[0] || email || 'Unknown author'
-  return author || email || 'Unknown author'
+  if (settings.authorFormat === 'email') return email || author || UNKNOWN_AUTHOR
+  if (settings.authorFormat === 'first') return author.split(/\s+/)[0] || email || UNKNOWN_AUTHOR
+  return author || email || UNKNOWN_AUTHOR
 }
 
 export function formatAttribution(entry: Pick<DisplayEntry, 'author' | 'authorEmail' | 'date'>, settings: DisplaySettings): string {
@@ -75,6 +81,8 @@ export function formatOwnershipRange(range: OwnershipRange): string {
   if (range.start === range.end) return `This commit owns line ${range.start}`
   return `This commit owns lines ${range.start}-${range.end}`
 }
+
+// String hygiene ------------------------------------------------------------
 
 export function firstLine(text: string, maxLen = 72, fallback = ''): string {
   const [line = ''] = text.split(/\r?\n/, 1)

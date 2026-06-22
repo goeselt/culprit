@@ -36,7 +36,13 @@ const GIT_INVALIDATION_DEBOUNCE_MS = 100
 const RECENT_FILE_COMMITS = 5
 const COPY_STATUS_TTL = 1_500
 const REMOTE_STATUS_TTL = 3_000
+const DEFAULT_INLINE_FORMAT = '${summary}, ${author} (${date})'
+const DEFAULT_SUMMARY_MAX_LENGTH = 50
+const MIN_SUMMARY_MAX_LENGTH = 20
+const MAX_SUMMARY_MAX_LENGTH = 200
 const DEFAULT_INLINE_MAX_LENGTH = 140
+const MIN_INLINE_MAX_LENGTH = 60
+const MAX_INLINE_MAX_LENGTH = 300
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
@@ -56,6 +62,8 @@ let enabled = true
 let decorationType: vscode.TextEditorDecorationType
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let gitInvalidationTimer: ReturnType<typeof setTimeout> | undefined
+// Async Git calls and external .git watcher setup can finish after state was
+// invalidated. Generations let those stale completions become harmless no-ops.
 let cacheGeneration = 0
 let watcherGeneration = 0
 let lastActiveLine = -1
@@ -369,7 +377,7 @@ async function openRemoteCommit(sha: string, filePath: string) {
   await vscode.env.openExternal(vscode.Uri.parse(url))
 }
 
-// Settings and formatting ---------------------------------------------------
+// Settings and blame options ------------------------------------------------
 
 function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
   const info = blame.get(line)
@@ -396,9 +404,21 @@ function readSettings(): Settings {
     authorFormat: cfg.get<AuthorFormat>('authorFormat', 'full'),
     dateFormat: cfg.get<DateFormat>('dateFormat', 'relative'),
     locale: cfg.get<string>('locale', ''),
-    summaryMaxLength: readNumberSetting(cfg, 'summaryMaxLength', 50, 20, 200),
-    inlineMaxLength: readNumberSetting(cfg, 'inlineMaxLength', DEFAULT_INLINE_MAX_LENGTH, 60, 300),
-    inlineFormat: cfg.get<string>('inlineFormat', '${summary}, ${author} (${date})'),
+    summaryMaxLength: readNumberSetting(
+      cfg,
+      'summaryMaxLength',
+      DEFAULT_SUMMARY_MAX_LENGTH,
+      MIN_SUMMARY_MAX_LENGTH,
+      MAX_SUMMARY_MAX_LENGTH,
+    ),
+    inlineMaxLength: readNumberSetting(
+      cfg,
+      'inlineMaxLength',
+      DEFAULT_INLINE_MAX_LENGTH,
+      MIN_INLINE_MAX_LENGTH,
+      MAX_INLINE_MAX_LENGTH,
+    ),
+    inlineFormat: cfg.get<string>('inlineFormat', DEFAULT_INLINE_FORMAT),
   }
 }
 

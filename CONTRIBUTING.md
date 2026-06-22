@@ -6,29 +6,40 @@ suite.
 
 ## Design
 
-| File               | Responsibility                                                            |
-| ------------------ | ------------------------------------------------------------------------- |
-| `src/git.ts`       | Git subprocess calls: blame, file history, diff existence check.          |
-| `src/extension.ts` | Decoration lifecycle, caching, hover rendering, Git watcher invalidation. |
-| `esbuild.mjs`      | Bundle script that compiles TypeScript sources to `out/extension.js`.     |
+| File               | Responsibility                                                              |
+| ------------------ | --------------------------------------------------------------------------- |
+| `src/extension.ts` | VS Code lifecycle, one active-line decoration, commands, cache invalidation. |
+| `src/git.ts`       | Git subprocess calls, output parsing, repo/path safety boundaries.           |
+| `src/display.ts`   | Pure formatting for inline text, hover text, dates, and string hygiene.      |
+| `package.json`     | User-visible commands, settings, VS Code engine, extension capabilities.     |
+| `esbuild.mjs`      | Bundle script that compiles TypeScript sources to `out/extension.js`.        |
 
-`src/git.ts` owns all process spawning and output parsing; `src/extension.ts` never calls Git directly. Cache
-invalidation is driven by filesystem watchers on `.git/HEAD`, `.git/index`, and related refs -- not by Visual Studio
-Code document events alone.
+`src/git.ts` owns all process spawning and output parsing; `src/extension.ts` never calls Git directly. `src/display.ts`
+does not import `vscode`, so formatting stays easy to test with plain Node tests.
 
 ## Maintainer Map
 
 Start here when you come back after a break:
 
-1. `src/extension.ts` wires VS Code events to one active-line decoration.
-2. `src/git.ts` runs Git commands and parses their output.
-3. `package.json` declares commands and settings visible to users.
-4. `README.md` describes user-facing behavior; keep it in sync with settings.
-5. `test/git.test.ts` covers Git parsing and command-safety boundaries.
+1. Read `activate()` in `src/extension.ts` to see every VS Code event and command.
+2. Follow `updateDecoration()` for the normal cursor-move path.
+3. Check `getFileBlame()` and `getFileHistory()` for cache behavior.
+4. Open `src/git.ts` only when changing Git invocations or parsing.
+5. Open `src/display.ts` only when changing user-facing text or formatting.
+6. Keep `README.md`, `package.json`, and `CONTRIBUTING.md` in sync when adding settings or commands.
 
 The extension should stay local-first and API-sparse. It may open a remote
 commit URL when the user clicks the hover action, but it should not call hosted
 Git APIs to render blame.
+
+## Core Rules
+
+- One active editor line gets one decoration. Avoid background blame scans.
+- Git calls go through `src/git.ts` and use `execFile`, never shell command strings.
+- Values from Git output are untrusted display data; sanitize them in `src/display.ts`.
+- Markdown command links must validate their command arguments before doing work.
+- Cache invalidation is driven by `.git/HEAD`, `.git/index`, packed refs, branch refs, saves, and configuration changes.
+- Settings need a default in `package.json`, a matching runtime fallback, README documentation, and usually a small test.
 
 ## Development Setup
 
@@ -75,13 +86,14 @@ npm run update
 
 - Keep Git subprocess work in `src/git.ts`.
 - Keep VS Code UI lifecycle work in `src/extension.ts`.
+- Keep formatting and string cleanup in `src/display.ts`.
 - Prefer one active-line decoration over background analysis or broad scans.
 - Validate command inputs that can come from Markdown command links.
 - Prefer small settings with clear defaults; remove settings when the feature is
   removed.
-- Add tests for Git parsing, path handling, shell/command safety, and URL
-  generation. Manual Extension Development Host testing is acceptable for
-  VS Code rendering behavior.
+- Add tests for Git parsing, path handling, shell/command safety, URL
+  generation, and display formatting. Manual Extension Development Host testing
+  is acceptable for VS Code rendering behavior.
 
 ## Submitting Changes
 
