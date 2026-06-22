@@ -1,6 +1,14 @@
 import * as vscode from 'vscode'
 import { basename } from 'node:path'
-import { blameFile, fileExistsInParent, fileHistory, relativeDate, type BlameInfo, type HistoryEntry } from './git.js'
+import {
+  blameFile,
+  fileExistsInParent,
+  fileHistory,
+  isValidCommitSha,
+  relativeDate,
+  type BlameInfo,
+  type HistoryEntry,
+} from './git.js'
 
 const EMPTY_SCHEME = 'culprit-empty'
 const CACHE_TTL = 10 * 60_000
@@ -256,7 +264,7 @@ function setLineDecoration(
 }
 
 async function showDiff(sha: string, filePath: string) {
-  if (!sha || /^0+$/.test(sha)) return
+  if (!isValidCommitSha(sha) || !filePath) return
 
   const short = sha.slice(0, 7)
   const name = basename(filePath)

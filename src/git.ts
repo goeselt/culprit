@@ -1,5 +1,5 @@
 import { execFile } from 'node:child_process'
-import { dirname } from 'node:path'
+import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 const GIT_TIMEOUT_MS = 5_000
 const SHA_RE = /^[0-9a-f]{40,64}$/
@@ -21,6 +21,10 @@ export interface HistoryEntry {
   author: string
   date: Date
   summary: string
+}
+
+export function isValidCommitSha(sha: string): boolean {
+  return SHA_RE.test(sha) && !/^0+$/.test(sha)
 }
 
 function run(args: string[], cwd: string): Promise<string> {
@@ -100,8 +104,9 @@ export async function blameFile(filePath: string): Promise<Map<number, BlameInfo
  */
 export async function fileHistory(filePath: string, count = 3): Promise<HistoryEntry[]> {
   const cwd = dirname(filePath)
+  const limit = Number.isInteger(count) && count > 0 && count <= 100 ? count : 3
 
-  const out = await run(['log', `--max-count=${count}`, '--pretty=format:%H%x00%an%x00%aI%x00%s', '--', filePath], cwd)
+  const out = await run(['log', `--max-count=${limit}`, '--pretty=format:%H%x00%an%x00%aI%x00%s', '--', filePath], cwd)
 
   const entries: HistoryEntry[] = []
 
@@ -124,17 +129,25 @@ export async function fileHistory(filePath: string, count = 3): Promise<HistoryE
  * Check if a file existed in the parent of the given commit.
  */
 export async function fileExistsInParent(sha: string, filePath: string): Promise<boolean> {
+  if (!isValidCommitSha(sha)) return false
+
   try {
-    // Resolve relative path from repo root
     const cwd = dirname(filePath)
     const root = await repoToplevel(cwd)
-    const rel = filePath.slice(root.length + 1).replace(/\\/g, '/')
-    // Check if the file exists at sha~1
+    const rel = repoRelativePath(root, filePath)
+    if (!rel) return false
+
     await run(['cat-file', '-e', `${sha}~1:${rel}`], cwd)
     return true
   } catch {
     return false
   }
+}
+
+function repoRelativePath(root: string, filePath: string): string | undefined {
+  const rel = relative(resolve(root), resolve(filePath))
+  if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined
+  return rel.replace(/\\/g, '/')
 }
 
 async function repoToplevel(cwd: string): Promise<string> {
