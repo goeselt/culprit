@@ -45,13 +45,13 @@
     "build": "node esbuild.mjs",
     "typecheck": "tsc --noEmit",
     "verify": "npm run typecheck && npm run build",
-    "vscode-engine": "VSCODE_API=\"$(npm view @types/vscode version)\" && npm pkg set \"engines.vscode=^${VSCODE_API}\"",
-    "update": "npm run vscode-engine && npm install",
+    "vscode-engine": "VSCODE_API=\"$(npm view @types/vscode version)\" && npm pkg set \"engines.vscode=^${VSCODE_API}\" && npm install \"@types/vscode@${VSCODE_API}\"",
+    "update": "npm run vscode-engine",
     "package": "npx --yes --package @vscode/vsce vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "*",
-    "@types/vscode": "*",
+    "@types/vscode": "1.120.0",
     "esbuild": "*",
     "typescript": "*"
   }

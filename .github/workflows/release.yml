@@ -38,12 +38,13 @@ jobs:
         with:
           fetch-depth: 0 # intent release needs full history to find the previous release tag
           token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
 
       - id: intent
         name: Intent Release
         uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
         with:
-          initial-version: '1.2.0'
+          initial-version: '1.0.0'
 
       - name: Set Up Node
         if: steps.intent.outputs.release-needed == 'true'
@@ -54,10 +55,6 @@ jobs:
       - name: Install Dependencies
         if: steps.intent.outputs.release-needed == 'true'
         run: npm ci
-
-      - name: Update
-        if: steps.intent.outputs.release-needed == 'true'
-        run: npm run update
 
       - name: Typecheck
         if: steps.intent.outputs.release-needed == 'true'
@@ -96,6 +93,7 @@ jobs:
             package.json
             package-lock.json
           message: 'chore(version): release v${{ steps.intent.outputs.next-version }}'
+          github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
           git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
           signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}
