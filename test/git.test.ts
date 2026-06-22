@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import { execFileSync } from 'node:child_process'
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -89,6 +89,22 @@ test('blameFile accepts a configured ignore-revs file when present', async () =>
     assert.equal(await defaultIgnoreRevsFile(repo.file, '../outside'), undefined)
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
+  }
+})
+
+test('defaultIgnoreRevsFile rejects symlinks before passing paths to git', async () => {
+  const repo = createRepo()
+  const outside = join(repo.dir, '..', 'outside-ignore-revs')
+  const ignoreRevs = join(repo.dir, '.git-blame-ignore-revs')
+
+  try {
+    writeFileSync(outside, `${repo.second}\n`)
+    symlinkSync(outside, ignoreRevs)
+
+    assert.equal(await defaultIgnoreRevsFile(repo.file, '.git-blame-ignore-revs'), undefined)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+    rmSync(outside, { force: true })
   }
 })
 

@@ -5,5 +5,5 @@
     "outDir": ".test-out",
     "noEmit": false
   },
-  "include": ["src/git.ts", "src/display.ts", "test/**/*.ts"]
+  "include": ["src/git.ts", "src/display.ts", "src/paths.ts", "test/**/*.ts"]
 }

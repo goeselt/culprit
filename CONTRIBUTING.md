@@ -38,6 +38,7 @@ Git APIs to render blame.
 - Git calls go through `src/git.ts` and use `execFile`, never shell command strings.
 - Values from Git output are untrusted display data; sanitize them in `src/display.ts`.
 - Markdown command links must validate their command arguments before doing work.
+- Public command handlers must reject file paths outside the opened workspace.
 - Automatic blame should stay bounded; large-file limits protect the extension host from expensive Git calls.
 - Cache invalidation is driven by `.git/HEAD`, `.git/index`, packed refs, branch refs, saves, and configuration changes.
 - Settings need a default in `package.json`, a matching runtime fallback, README documentation, and usually a small test.

@@ -22,6 +22,7 @@ import {
   type BlameInfo,
   type HistoryEntry,
 } from './git.js'
+import { isWorkspaceFilePath } from './paths.js'
 
 const EMPTY_SCHEME = 'culprit-empty'
 const CACHE_TTL = 10 * 60_000
@@ -351,40 +352,55 @@ function clearInactiveEditorDecorations(activeEditor: vscode.TextEditor) {
 
 // Commands ------------------------------------------------------------------
 
-async function showDiff(sha: string, filePath: string) {
-  if (!isValidCommitSha(sha) || !filePath) return
+async function showDiff(sha: unknown, filePath: unknown) {
+  const safeSha = commandSha(sha)
+  const safeFilePath = commandFilePath(filePath)
+  if (!safeSha || !safeFilePath) return
 
-  const short = sha.slice(0, 7)
-  const name = basename(filePath)
+  const short = safeSha.slice(0, 7)
+  const name = basename(safeFilePath)
   const gitUri = (ref: string) =>
     vscode.Uri.from({
       scheme: 'git',
-      path: filePath,
-      query: JSON.stringify({ path: filePath, ref }),
+      path: safeFilePath,
+      query: JSON.stringify({ path: safeFilePath, ref }),
     })
 
-  if (await fileExistsInParent(sha, filePath)) {
-    await vscode.commands.executeCommand('vscode.diff', gitUri(`${sha}~1`), gitUri(sha), `${short}: ${name}`)
+  if (await fileExistsInParent(safeSha, safeFilePath)) {
+    await vscode.commands.executeCommand('vscode.diff', gitUri(`${safeSha}~1`), gitUri(safeSha), `${short}: ${name}`)
   } else {
-    const emptyUri = vscode.Uri.from({ scheme: EMPTY_SCHEME, path: filePath })
-    await vscode.commands.executeCommand('vscode.diff', emptyUri, gitUri(sha), `${short} (new file): ${name}`)
+    const emptyUri = vscode.Uri.from({ scheme: EMPTY_SCHEME, path: safeFilePath })
+    await vscode.commands.executeCommand('vscode.diff', emptyUri, gitUri(safeSha), `${short} (new file): ${name}`)
   }
 }
 
-async function copySha(sha: string) {
-  if (!isValidCommitSha(sha)) return
-  await vscode.env.clipboard.writeText(sha)
-  vscode.window.setStatusBarMessage(`Culprit: copied ${sha.slice(0, 7)}`, COPY_STATUS_TTL)
+async function copySha(sha: unknown) {
+  const safeSha = commandSha(sha)
+  if (!safeSha) return
+  await vscode.env.clipboard.writeText(safeSha)
+  vscode.window.setStatusBarMessage(`Culprit: copied ${safeSha.slice(0, 7)}`, COPY_STATUS_TTL)
 }
 
-async function openRemoteCommit(sha: string, filePath: string) {
-  if (!isValidCommitSha(sha) || !filePath) return
-  const url = await remoteCommitUrl(sha, filePath)
+async function openRemoteCommit(sha: unknown, filePath: unknown) {
+  const safeSha = commandSha(sha)
+  const safeFilePath = commandFilePath(filePath)
+  if (!safeSha || !safeFilePath) return
+  const url = await remoteCommitUrl(safeSha, safeFilePath)
   if (!url) {
     vscode.window.setStatusBarMessage('Culprit: no supported remote commit URL found.', REMOTE_STATUS_TTL)
     return
   }
   await vscode.env.openExternal(vscode.Uri.parse(url))
+}
+
+function commandSha(sha: unknown): string | undefined {
+  return typeof sha === 'string' && isValidCommitSha(sha) ? sha : undefined
+}
+
+function commandFilePath(filePath: unknown): string | undefined {
+  if (typeof filePath !== 'string') return undefined
+  const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath)
+  return isWorkspaceFilePath(filePath, workspaceRoots) ? filePath : undefined
 }
 
 // Settings and blame options ------------------------------------------------

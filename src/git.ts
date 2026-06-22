@@ -1,6 +1,6 @@
 import { execFile } from 'node:child_process'
 import { constants } from 'node:fs'
-import { access } from 'node:fs/promises'
+import { access, lstat } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 const GIT_TIMEOUT_MS = 5_000
@@ -213,6 +213,8 @@ function repoRelativePath(root: string, filePath: string): string | undefined {
 
 async function usableIgnoreRevsFile(filePath: string): Promise<string | undefined> {
   try {
+    const stat = await lstat(filePath)
+    if (!stat.isFile()) return undefined
     await access(filePath, constants.R_OK)
     return filePath
   } catch {
