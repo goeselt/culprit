@@ -17,7 +17,7 @@ permissions:
 
 jobs:
   codeql:
-    name: CodeQL
+    name: CodeQL (${{ matrix.language }})
     runs-on: ubuntu-latest
     timeout-minutes: 10
     permissions:
@@ -25,6 +25,13 @@ jobs:
       contents: read # Required to check out and analyze repository contents.
       packages: read # Required by CodeQL when resolving package metadata in private/internal contexts.
       security-events: write # Required to upload CodeQL results to code scanning.
+    strategy:
+      matrix:
+        include:
+          - language: javascript-typescript
+            build-mode: none
+          - language: actions
+            build-mode: none
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
@@ -34,13 +41,13 @@ jobs:
       - name: Initialize CodeQL
         uses: github/codeql-action/init@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
-          languages: javascript-typescript
-          build-mode: none
+          languages: ${{ matrix.language }}
+          build-mode: ${{ matrix.build-mode }}
 
       - name: Perform CodeQL Analysis
         uses: github/codeql-action/analyze@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
         with:
-          category: /language:javascript-typescript
+          category: /language:${{ matrix.language }}
 
   scorecard:
     name: Scorecard
@@ -50,21 +57,17 @@ jobs:
     permissions:
       contents: read # Required to check out and inspect repository contents.
       id-token: write # Required when Scorecard publishes results with keyless attestation.
-      security-events: write # Required to upload Scorecard SARIF results to code scanning.
     steps:
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           persist-credentials: false
 
+      # Results are published to the public OpenSSF Scorecard API (score badge); they are deliberately not uploaded
+      # to GitHub code scanning, which is reserved for CodeQL code-vulnerability findings.
       - name: Run Scorecard
         uses: ossf/scorecard-action@4eaacf0543bb3f2c246792bd56e8cdeffafb205a # v2.4.3
         with:
           results_file: scorecard.sarif
           results_format: sarif
           publish_results: true
-
-      - name: Upload Scorecard Results
-        uses: github/codeql-action/upload-sarif@8aad20d150bbac5944a9f9d289da16a4b0d87c1e # v4.36.2
-        with:
-          sarif_file: scorecard.sarif
