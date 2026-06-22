@@ -1,0 +1,20 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="256" height="256" viewBox="0 0 256 256">
+  <!-- Background -->
+  <rect width="256" height="256" rx="48" fill="#0F766E"/>
+  <!-- Editor sheet -->
+  <rect x="32" y="30" width="192" height="196" rx="22" fill="white"/>
+  <!-- Active blamed line -->
+  <rect x="56" y="74" width="144" height="16" rx="8" fill="#0F766E" opacity="0.22"/>
+  <rect x="56" y="74" width="66" height="16" rx="8" fill="#0F766E"/>
+  <!-- Context lines -->
+  <rect x="56" y="110" width="120" height="12" rx="6" fill="#0F766E" opacity="0.38"/>
+  <rect x="56" y="140" width="98" height="12" rx="6" fill="#0F766E" opacity="0.38"/>
+  <rect x="56" y="170" width="132" height="12" rx="6" fill="#0F766E" opacity="0.38"/>
+  <!-- Commit marker -->
+  <circle cx="184" cy="82" r="14" fill="#0F766E"/>
+  <path d="M184 96 V184" stroke="#0F766E" stroke-width="8" stroke-linecap="round" opacity="0.55"/>
+  <circle cx="184" cy="184" r="14" fill="#0F766E"/>
+  <!-- Small clock hint -->
+  <circle cx="90" cy="205" r="15" fill="#0F766E" opacity="0.9"/>
+  <path d="M90 196 V206 L98 211" fill="none" stroke="white" stroke-width="4" stroke-linecap="round" stroke-linejoin="round"/>
+</svg>

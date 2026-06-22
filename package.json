@@ -4,6 +4,7 @@
   "description": "Lightweight inline git blame -- shows author and date per line, hover for recent file commits, click to view diff.",
   "version": "1.2.1",
   "publisher": "goeselt",
+  "icon": "resources/icon.png",
   "license": "MIT",
   "repository": {
     "type": "git",
@@ -15,6 +16,19 @@
   "categories": [
     "SCM Providers"
   ],
+  "extensionKind": [
+    "workspace"
+  ],
+  "capabilities": {
+    "untrustedWorkspaces": {
+      "supported": false,
+      "description": "Culprit runs local Git commands for the active workspace and is disabled until the workspace is trusted."
+    },
+    "virtualWorkspaces": {
+      "supported": false,
+      "description": "Culprit requires local Git metadata and a file-backed workspace."
+    }
+  },
   "activationEvents": [
     "onStartupFinished"
   ],
@@ -37,6 +51,67 @@
           "type": "boolean",
           "default": true,
           "description": "Enable inline blame annotations."
+        },
+        "culprit.ignoreRevs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Respect an ignore-revs file when running git blame."
+        },
+        "culprit.ignoreRevs.file": {
+          "type": "string",
+          "default": ".git-blame-ignore-revs",
+          "description": "Repository-relative ignore-revs file used for git blame. Git's blame.ignoreRevsFile config is still respected by Git."
+        },
+        "culprit.inlineFormat": {
+          "type": "string",
+          "default": "${summary}, ${author} (${date})",
+          "description": "Inline blame format. Supports ${sha}, ${fullSha}, ${author}, ${date}, ${summary}, and ${range}."
+        },
+        "culprit.authorFormat": {
+          "type": "string",
+          "enum": [
+            "full",
+            "first",
+            "email",
+            "hidden"
+          ],
+          "default": "full",
+          "description": "Author display format."
+        },
+        "culprit.dateFormat": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "absolute"
+          ],
+          "default": "relative",
+          "description": "Date display format."
+        },
+        "culprit.locale": {
+          "type": "string",
+          "default": "",
+          "description": "Locale used for absolute dates. Empty uses the VS Code runtime default."
+        },
+        "culprit.summaryMaxLength": {
+          "type": "number",
+          "default": 50,
+          "minimum": 20,
+          "maximum": 200,
+          "description": "Maximum commit summary length shown in inline and hover text."
+        },
+        "culprit.inlineMaxLength": {
+          "type": "number",
+          "default": 140,
+          "minimum": 60,
+          "maximum": 300,
+          "description": "Maximum total length of the inline blame annotation after formatting."
+        },
+        "culprit.maxFileLines": {
+          "type": "number",
+          "default": 10000,
+          "minimum": 1000,
+          "maximum": 100000,
+          "description": "Maximum file size, in lines, that Culprit will automatically blame."
         }
       }
     }
@@ -44,14 +119,16 @@
   "scripts": {
     "build": "node esbuild.mjs",
     "typecheck": "tsc --noEmit",
-    "verify": "npm run typecheck && npm run build",
-    "vscode-engine": "VSCODE_API=\"$(npm view @types/vscode version)\" && npm pkg set \"engines.vscode=^${VSCODE_API}\"",
-    "update": "npm run vscode-engine && npm install",
-    "package": "npx --yes --package @vscode/vsce vsce package --no-dependencies"
+    "test": "tsc -p tsconfig.test.json && node --test .test-out/test/*.test.js",
+    "verify": "npm run typecheck && npm test && npm run build",
+    "vscode-engine": "VSCODE_API=\"$(npm view @types/vscode version)\" && npm pkg set \"engines.vscode=^${VSCODE_API}\" && npm install \"@types/vscode@${VSCODE_API}\"",
+    "update": "npm run vscode-engine",
+    "package": "vsce package --no-dependencies"
   },
   "devDependencies": {
     "@types/node": "*",
-    "@types/vscode": "*",
+    "@types/vscode": "1.120.0",
+    "@vscode/vsce": "3.9.2",
     "esbuild": "*",
     "typescript": "*"
   }

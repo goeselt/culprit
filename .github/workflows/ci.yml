@@ -3,7 +3,6 @@ name: CI
 
 on:
   pull_request:
-    types: [opened, synchronize, reopened, edited]
 
 concurrency:
   group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
@@ -25,11 +24,6 @@ jobs:
       contents: read
       pull-requests: write
     steps:
-      - name: Validate Intent
-        uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
-        with:
-          github-token: ${{ secrets.GITHUB_TOKEN }}
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
@@ -42,20 +36,40 @@ jobs:
           node-version: '24'
 
       - name: Install Dependencies
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Verify Lockfile Sync
         run: |
-          npm install --package-lock-only
+          npm install --package-lock-only --ignore-scripts
           git diff --exit-code package-lock.json
+
+      - name: Verify VSCode Consistency
+        run: node .github/workflows/ci-check-vscode.js
 
       - name: Typecheck
         run: npm run typecheck
+
+      - name: Test
+        run: npm test
 
       - name: Build
         run: npm run build
 
       - name: Pedant
-        uses: goeselt/pedant@b729ab0c66a689f536bf12bf3c71dd1932b22abe # v1.2.1
+        id: pedant
+        continue-on-error: true
+        uses: goeselt/pedant@a62f5beea373a55846791c2113ceacd07f114826 # v1.2.2
         with:
-          ignore: out/
+          summary-github-step: true
+
+      - name: Publish Pedant Report
+        if: always()
+        uses: goeselt/remark@b5a3f7c0d7b25e6634f1f2f9ef13e6b808370972 # v1.0.3
+        with:
+          body: ${{ steps.pedant.outputs.summary }}
+          comment-key: pedant
+          skip-unchanged: true
+
+      - name: Fail On Pedant Findings
+        if: steps.pedant.outcome != 'success'
+        run: exit 1

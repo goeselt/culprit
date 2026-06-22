@@ -1,8 +1,12 @@
 .vscode/
+.gitignore
 src/
+test/
 tsconfig.json
+tsconfig.test.json
 esbuild.mjs
 out/**/*.map
+.test-out/
 .github/**
 *.config.mjs
 node_modules/

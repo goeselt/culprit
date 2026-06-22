@@ -22,28 +22,21 @@ jobs:
     runs-on: ubuntu-latest
     timeout-minutes: 15
     permissions:
-      contents: write
+      contents: read
       id-token: write
       attestations: write
     steps:
-      - id: app
-        name: Generate App Token
-        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
-        with:
-          client-id: ${{ vars.RELEASE_APP_ID }}
-          private-key: ${{ secrets.RELEASE_APP_KEY }}
-
       - name: Checkout
         uses: actions/checkout@9c091bb21b7c1c1d1991bb908d89e4e9dddfe3e0 # v7.0.0
         with:
           fetch-depth: 0 # intent release needs full history to find the previous release tag
-          token: ${{ steps.app.outputs.token }}
+          persist-credentials: false
 
       - id: intent
         name: Intent Release
         uses: goeselt/intent@21b70d0a25a0aae8002ca2c7fb4f4b3ba604922e # v1.1.2
         with:
-          initial-version: '1.2.0'
+          initial-version: '1.0.0'
 
       - name: Set Up Node
         if: steps.intent.outputs.release-needed == 'true'
@@ -53,15 +46,15 @@ jobs:
 
       - name: Install Dependencies
         if: steps.intent.outputs.release-needed == 'true'
-        run: npm ci
-
-      - name: Update
-        if: steps.intent.outputs.release-needed == 'true'
-        run: npm run update
+        run: npm ci --ignore-scripts
 
       - name: Typecheck
         if: steps.intent.outputs.release-needed == 'true'
         run: npm run typecheck
+
+      - name: Test
+        if: steps.intent.outputs.release-needed == 'true'
+        run: npm test
 
       - name: Bump Version
         if: steps.intent.outputs.release-needed == 'true'
@@ -88,6 +81,14 @@ jobs:
         with:
           subject-path: ${{ steps.pkg.outputs.vsix }}
 
+      - id: app
+        name: Generate App Token
+        if: steps.intent.outputs.release-needed == 'true'
+        uses: actions/create-github-app-token@bcd2ba49218906704ab6c1aa796996da409d3eb1 # v3.2.0
+        with:
+          client-id: ${{ vars.RELEASE_APP_ID }}
+          private-key: ${{ secrets.RELEASE_APP_KEY }}
+
       - name: Commit Version Bump
         if: steps.intent.outputs.release-needed == 'true'
         uses: goeselt/scribe@c233f5828a9590d21e2af93d7f2d4cf6a81ac822 # v1.2.0
@@ -96,6 +97,7 @@ jobs:
             package.json
             package-lock.json
           message: 'chore(version): release v${{ steps.intent.outputs.next-version }}'
+          github-token: ${{ steps.app.outputs.token }}
           git-user-name: ${{ vars.RELEASE_SIGNING_USER }}
           git-user-email: ${{ vars.RELEASE_SIGNING_EMAIL }}
           signing-key: ${{ secrets.RELEASE_SIGNING_KEY }}

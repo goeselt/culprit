@@ -1,6 +1,31 @@
 import * as vscode from 'vscode'
-import { basename } from 'node:path'
-import { blameFile, fileExistsInParent, fileHistory, relativeDate, type BlameInfo, type HistoryEntry } from './git.js'
+import { readFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
+import {
+  escapeMarkdown,
+  firstLine,
+  formatDate,
+  formatHoverAuthor,
+  formatOwnershipRange,
+  formatTemplate,
+  type AuthorIdentity,
+  type AuthorFormat,
+  type DateFormat,
+  type DisplaySettings,
+  type OwnershipRange,
+} from './display.js'
+import {
+  blameFile,
+  defaultIgnoreRevsFile,
+  fileExistsInParent,
+  fileHistory,
+  gitIdentity,
+  isValidCommitSha,
+  remoteCommitUrl,
+  type BlameInfo,
+  type HistoryEntry,
+} from './git.js'
+import { isWorkspaceFilePath } from './paths.js'
 
 const EMPTY_SCHEME = 'culprit-empty'
 const CACHE_TTL = 10 * 60_000
@@ -10,12 +35,43 @@ const CACHE_TTL = 10 * 60_000
 const ERROR_CACHE_TTL = 5_000
 const MAX_BLAME_FILES = 200
 const MAX_HISTORY_CACHE_ENTRIES = 100
+const MAX_IDENTITY_CACHE_ENTRIES = 20
+const UPDATE_DEBOUNCE_MS = 150
+const GIT_INVALIDATION_DEBOUNCE_MS = 100
+const RECENT_FILE_COMMITS = 5
+const COPY_STATUS_TTL = 1_500
+const REMOTE_STATUS_TTL = 3_000
+const TEMPLATE_PREFIX = '$'
+const DEFAULT_INLINE_FORMAT = `${TEMPLATE_PREFIX}{summary}, ${TEMPLATE_PREFIX}{author} (${TEMPLATE_PREFIX}{date})`
+const DEFAULT_SUMMARY_MAX_LENGTH = 50
+const MIN_SUMMARY_MAX_LENGTH = 20
+const MAX_SUMMARY_MAX_LENGTH = 200
+const DEFAULT_INLINE_MAX_LENGTH = 140
+const MIN_INLINE_MAX_LENGTH = 60
+const MAX_INLINE_MAX_LENGTH = 300
+const DEFAULT_MAX_FILE_LINES = 10_000
+const MIN_MAX_FILE_LINES = 1_000
+const MAX_MAX_FILE_LINES = 100_000
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
+type BlameContext = {
+  info: BlameInfo
+  filePath: string
+  fileEntries: HistoryEntry[]
+  range: OwnershipRange
+  identity?: AuthorIdentity
+}
+type Settings = DisplaySettings & {
+  ignoreRevsEnabled: boolean
+  ignoreRevsFile: string
+  inlineFormat: string
+  maxFileLines: number
+}
 
 const blameCache = new Map<string, CacheEntry<FileBlame>>()
 const historyCache = new Map<string, CacheEntry<HistoryEntry[]>>()
+const identityCache = new Map<string, CacheEntry<AuthorIdentity | undefined>>()
 const refreshInFlight = new Map<string, Promise<FileBlame>>()
 const gitWatchers: vscode.Disposable[] = []
 
@@ -23,9 +79,14 @@ let enabled = true
 let decorationType: vscode.TextEditorDecorationType
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let gitInvalidationTimer: ReturnType<typeof setTimeout> | undefined
+// Async Git calls and external .git watcher setup can finish after state was
+// invalidated. Generations let those stale completions become harmless no-ops.
 let cacheGeneration = 0
+let watcherGeneration = 0
 let lastActiveLine = -1
 let lastActiveFile = ''
+
+// Extension lifecycle -------------------------------------------------------
 
 export function activate(ctx: vscode.ExtensionContext) {
   enabled = vscode.workspace.getConfiguration('culprit').get<boolean>('enabled', true)
@@ -38,9 +99,8 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   decorationType = vscode.window.createTextEditorDecorationType({
     after: {
-      color: new vscode.ThemeColor('editorGhostText.foreground'),
-      margin: '0 0 0 3em',
-      fontStyle: 'italic',
+      color: new vscode.ThemeColor('git.blame.editorDecorationForeground'),
+      margin: '0 0 0 50px',
     },
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedOpen,
   })
@@ -49,36 +109,42 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   ctx.subscriptions.push(
     decorationType,
-    vscode.window.onDidChangeTextEditorSelection((e) => scheduleUpdate(e.textEditor)),
-    vscode.window.onDidChangeActiveTextEditor((e) => e && scheduleUpdate(e)),
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      scheduleUpdate(e.textEditor)
+    }),
+    vscode.window.onDidChangeActiveTextEditor((e) => {
+      if (e) scheduleUpdate(e)
+    }),
     vscode.workspace.onDidChangeTextDocument((e) => {
       const ed = vscode.window.activeTextEditor
       if (ed?.document !== e.document) return
-      lastActiveLine = -1
-      lastActiveFile = ''
-      if (e.document.isDirty) ed.setDecorations(decorationType, [])
+      resetActivePosition()
+      if (e.document.isDirty) clearEditorDecorations(ed)
       else scheduleUpdate(ed)
     }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       invalidateFile(doc.uri.fsPath)
       const ed = vscode.window.activeTextEditor
       if (ed?.document === doc) {
-        lastActiveLine = -1
+        resetActivePosition()
         scheduleUpdate(ed)
       }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (!e.affectsConfiguration('culprit.enabled')) return
+      if (!e.affectsConfiguration('culprit')) return
       enabled = vscode.workspace.getConfiguration('culprit').get<boolean>('enabled', true)
       const ed = vscode.window.activeTextEditor
+      clearCaches()
       if (!ed) return
-      lastActiveLine = -1
+      resetActivePosition()
       if (enabled) scheduleUpdate(ed)
-      else ed.setDecorations(decorationType, [])
+      else clearEditorDecorations(ed)
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => registerGitWatchers()),
     vscode.commands.registerCommand('culprit.toggle', toggleEnabled),
     vscode.commands.registerCommand('culprit.showDiff', showDiff),
+    vscode.commands.registerCommand('culprit.copySha', copySha),
+    vscode.commands.registerCommand('culprit.openRemoteCommit', openRemoteCommit),
     { dispose: disposeGitWatchers },
   )
 
@@ -92,40 +158,50 @@ export function deactivate() {
   clearCaches()
 }
 
+// Active-line decoration lifecycle -----------------------------------------
+
 function toggleEnabled() {
   enabled = !enabled
   vscode.window.showInformationMessage(`Culprit: ${enabled ? 'enabled' : 'disabled'}`)
   void vscode.workspace.getConfiguration('culprit').update('enabled', enabled, vscode.ConfigurationTarget.Global)
   const ed = vscode.window.activeTextEditor
   if (!ed) return
-  lastActiveLine = -1
+  resetActivePosition()
   if (enabled) scheduleUpdate(ed)
-  else ed.setDecorations(decorationType, [])
+  else clearEditorDecorations(ed)
 }
 
 function scheduleUpdate(editor: vscode.TextEditor) {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
     void updateDecoration(editor)
-  }, 150)
+  }, UPDATE_DEBOUNCE_MS)
 }
 
 async function updateDecoration(editor: vscode.TextEditor) {
   if (!enabled || editor.document.uri.scheme !== 'file' || editor.document.isDirty) {
-    editor.setDecorations(decorationType, [])
-    lastActiveLine = -1
-    lastActiveFile = ''
+    clearEditorDecorations(editor)
+    resetActivePosition()
     return
   }
 
   const path = editor.document.uri.fsPath
   const activeLine = editor.selection.active.line + 1
+  const settings = readSettings()
+
+  if (editor.document.lineCount > settings.maxFileLines) {
+    clearEditorDecorations(editor)
+    resetActivePosition()
+    return
+  }
 
   if (path === lastActiveFile && activeLine === lastActiveLine) return
 
-  editor.setDecorations(decorationType, [])
+  clearInactiveEditorDecorations(editor)
+  clearEditorDecorations(editor)
 
-  const info = await getLineBlame(path, activeLine)
+  const blame = await getFileBlame(path, settings)
+  const info = blame.get(activeLine)
   const current = vscode.window.activeTextEditor
   if (current !== editor || editor.selection.active.line + 1 !== activeLine) return
 
@@ -133,24 +209,25 @@ async function updateDecoration(editor: vscode.TextEditor) {
   lastActiveFile = path
 
   if (!info || info.isUncommitted) {
-    editor.setDecorations(decorationType, [])
+    clearEditorDecorations(editor)
     return
   }
 
   const lineIdx = activeLine - 1
   const lineEnd = editor.document.lineAt(lineIdx).range.end
   const fileEntries = getCachedEntry(historyCache, path)?.data ?? []
+  const identity = await getGitIdentity(path)
+  if (vscode.window.activeTextEditor !== editor || editor.selection.active.line + 1 !== activeLine) return
+  const range = ownershipRange(blame, activeLine)
+  const context = { info, filePath: path, fileEntries, range, identity }
 
-  setLineDecoration(editor, lineIdx, lineEnd.character, info, fileEntries, path)
-  if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, info, path)
+  setLineDecoration(editor, lineIdx, lineEnd.character, context)
+  if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, context)
 }
 
-async function getLineBlame(path: string, lineNumber: number): Promise<BlameInfo | undefined> {
-  const blame = await getFileBlame(path)
-  return blame.get(lineNumber)
-}
+// Git data access -----------------------------------------------------------
 
-function getFileBlame(path: string): Promise<FileBlame> {
+function getFileBlame(path: string, settings: Settings): Promise<FileBlame> {
   const cached = getCachedEntry(blameCache, path)
   if (cached) return Promise.resolve(cached.data)
 
@@ -158,7 +235,8 @@ function getFileBlame(path: string): Promise<FileBlame> {
   if (inFlight) return inFlight
 
   const generation = cacheGeneration
-  const promise = blameFile(path)
+  const promise = blameOptions(path, settings)
+    .then((options) => blameFile(path, options))
     .then((data) => {
       if (generation === cacheGeneration) setCached(blameCache, path, data, MAX_BLAME_FILES, CACHE_TTL)
       return data
@@ -181,7 +259,7 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
   if (cached) return Promise.resolve(cached.data)
 
   const generation = cacheGeneration
-  return fileHistory(path, 5)
+  return fileHistory(path, RECENT_FILE_COMMITS)
     .then((data) => {
       if (generation !== cacheGeneration) return []
       setCached(historyCache, path, data, MAX_HISTORY_CACHE_ENTRIES, CACHE_TTL)
@@ -193,16 +271,36 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
     })
 }
 
-function buildHover(info: BlameInfo, fileEntries: HistoryEntry[], filePath: string): vscode.MarkdownString {
-  const md = new vscode.MarkdownString(undefined, true)
-  md.isTrusted = { enabledCommands: ['culprit.showDiff'] }
+function getGitIdentity(path: string): Promise<AuthorIdentity | undefined> {
+  const cached = getCachedEntry(identityCache, path)
+  if (cached) return Promise.resolve(cached.data)
 
-  const short = info.sha.slice(0, 7)
-  const args = encodeURIComponent(JSON.stringify([info.sha, filePath]))
-  md.appendMarkdown('**Recent Line Commit**\n\n')
-  md.appendMarkdown(
-    `[\`${short}\`](command:culprit.showDiff?${args}) ${esc(firstLine(info.summary))} (${esc(info.author)} - ${relativeDate(info.date)})\n\n`,
-  )
+  const generation = cacheGeneration
+  return gitIdentity(path)
+    .then((data) => {
+      if (generation === cacheGeneration) setCached(identityCache, path, data, MAX_IDENTITY_CACHE_ENTRIES, CACHE_TTL)
+      return data
+    })
+    .catch((): AuthorIdentity | undefined => {
+      if (generation === cacheGeneration)
+        setCached(identityCache, path, undefined, MAX_IDENTITY_CACHE_ENTRIES, ERROR_CACHE_TTL)
+      return undefined
+    })
+}
+
+// Hover and inline rendering ------------------------------------------------
+
+function buildHover(context: BlameContext): vscode.MarkdownString {
+  const { info, fileEntries, filePath, range } = context
+  const settings = readSettings()
+  const md = new vscode.MarkdownString(undefined, true)
+  md.isTrusted = { enabledCommands: ['culprit.copySha', 'culprit.openRemoteCommit', 'culprit.showDiff'] }
+  md.supportHtml = true
+  md.supportThemeIcons = true
+
+  md.appendMarkdown('**Line Commit**\n\n')
+  appendCommitHoverLine(md, info, filePath, settings, context.identity)
+  md.appendMarkdown(`${escapeMarkdown(formatOwnershipRange(range))}\n\n`)
 
   // Skip the file-history section when it would just repeat the line commit:
   // a single entry that is the same commit as the line blame.
@@ -211,77 +309,233 @@ function buildHover(info: BlameInfo, fileEntries: HistoryEntry[], filePath: stri
     md.appendMarkdown('---\n\n')
     md.appendMarkdown('**Recent File Commits**\n\n')
     for (const e of fileEntries) {
-      const s = e.sha.slice(0, 7)
-      const a = encodeURIComponent(JSON.stringify([e.sha, filePath]))
-      md.appendMarkdown(
-        `[\`${s}\`](command:culprit.showDiff?${a}) ${esc(firstLine(e.summary))} (${esc(e.author)} - ${relativeDate(e.date)})\n\n`,
-      )
+      appendCommitHoverLine(md, e, filePath, settings, context.identity)
     }
   }
 
   return md
 }
 
-async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, info: BlameInfo, path: string) {
-  const fileEntries = await getFileHistory(path)
+function appendCommitHoverLine(
+  md: vscode.MarkdownString,
+  entry: Pick<BlameInfo, 'sha' | 'summary' | 'author' | 'authorEmail' | 'date'>,
+  filePath: string,
+  settings: Settings,
+  identity: AuthorIdentity | undefined,
+) {
+  const summary = escapeMarkdown(firstLine(entry.summary, settings.summaryMaxLength, 'No commit summary'))
+  const author = formatHoverAuthor(entry, settings, identity)
+  const date = escapeMarkdown(formatDate(entry.date, settings))
+  const attribution = author ? `${author} $(clock) ${date}` : `$(clock) ${date}`
+  md.appendMarkdown(
+    `${commitCompareAction(entry.sha, filePath)} ${copyShaAction(entry.sha, filePath)} ${summary} ${openRemoteAction(entry.sha, filePath)} (${attribution})  \n`,
+  )
+}
+
+function commitCompareAction(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  const short = sha.slice(0, 7)
+  return `[$(git-commit) \`${short}\`](command:culprit.showDiff?${args})`
+}
+
+function copyShaAction(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  return `[$(copy)](command:culprit.copySha?${args})`
+}
+
+function openRemoteAction(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  return `[$(link-external)](command:culprit.openRemoteCommit?${args})`
+}
+
+async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, context: BlameContext) {
+  const fileEntries = await getFileHistory(context.filePath)
   const current = vscode.window.activeTextEditor
-  if (current !== editor || editor.document.uri.fsPath !== path || editor.selection.active.line + 1 !== activeLine) {
+  if (
+    current !== editor ||
+    editor.document.uri.fsPath !== context.filePath ||
+    editor.selection.active.line + 1 !== activeLine
+  ) {
     return
   }
 
   const lineIdx = activeLine - 1
   const lineEnd = editor.document.lineAt(lineIdx).range.end
-  setLineDecoration(editor, lineIdx, lineEnd.character, info, fileEntries, path)
+  const updated = { ...context, fileEntries }
+  setLineDecoration(editor, lineIdx, lineEnd.character, updated)
 }
 
 function setLineDecoration(
   editor: vscode.TextEditor,
   lineIdx: number,
   lineEndCharacter: number,
-  info: BlameInfo,
-  fileEntries: HistoryEntry[],
-  path: string,
+  context: BlameContext,
 ) {
+  const settings = readSettings()
   editor.setDecorations(decorationType, [
     {
       range: new vscode.Range(lineIdx, lineEndCharacter, lineIdx, lineEndCharacter),
-      hoverMessage: buildHover(info, fileEntries, path),
       renderOptions: {
         after: {
-          contentText: `${info.sha.slice(0, 7)}: ${firstLine(info.summary, 50)}`,
+          contentText: formatTemplate(settings.inlineFormat, context, settings),
         },
       },
+      hoverMessage: buildHover(context),
     },
   ])
 }
 
-async function showDiff(sha: string, filePath: string) {
-  if (!sha || /^0+$/.test(sha)) return
+function clearEditorDecorations(editor: vscode.TextEditor) {
+  editor.setDecorations(decorationType, [])
+}
 
-  const short = sha.slice(0, 7)
-  const name = basename(filePath)
-  const gitUri = (ref: string) =>
-    vscode.Uri.from({
-      scheme: 'git',
-      path: filePath,
-      query: JSON.stringify({ path: filePath, ref }),
-    })
-
-  if (await fileExistsInParent(sha, filePath)) {
-    await vscode.commands.executeCommand('vscode.diff', gitUri(`${sha}~1`), gitUri(sha), `${short}: ${name}`)
-  } else {
-    const emptyUri = vscode.Uri.from({ scheme: EMPTY_SCHEME, path: filePath })
-    await vscode.commands.executeCommand('vscode.diff', emptyUri, gitUri(sha), `${short} (new file): ${name}`)
+function clearInactiveEditorDecorations(activeEditor: vscode.TextEditor) {
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (editor !== activeEditor) clearEditorDecorations(editor)
   }
 }
 
+// Commands ------------------------------------------------------------------
+
+async function showDiff(sha: unknown, filePath: unknown) {
+  const safeSha = commandSha(sha)
+  const safeFilePath = commandFilePath(filePath)
+  if (!safeSha || !safeFilePath) return
+
+  const short = safeSha.slice(0, 7)
+  const name = basename(safeFilePath)
+  const gitUri = (ref: string) =>
+    vscode.Uri.from({
+      scheme: 'git',
+      path: safeFilePath,
+      query: JSON.stringify({ path: safeFilePath, ref }),
+    })
+
+  if (await fileExistsInParent(safeSha, safeFilePath)) {
+    await vscode.commands.executeCommand('vscode.diff', gitUri(`${safeSha}~1`), gitUri(safeSha), `${short}: ${name}`)
+  } else {
+    const emptyUri = vscode.Uri.from({ scheme: EMPTY_SCHEME, path: safeFilePath })
+    await vscode.commands.executeCommand('vscode.diff', emptyUri, gitUri(safeSha), `${short} (new file): ${name}`)
+  }
+}
+
+async function copySha(sha: unknown) {
+  const safeSha = commandSha(sha)
+  if (!safeSha) return
+  await vscode.env.clipboard.writeText(safeSha)
+  vscode.window.setStatusBarMessage(`Culprit: copied ${safeSha.slice(0, 7)}`, COPY_STATUS_TTL)
+}
+
+async function openRemoteCommit(sha: unknown, filePath: unknown) {
+  const safeSha = commandSha(sha)
+  const safeFilePath = commandFilePath(filePath)
+  if (!safeSha || !safeFilePath) return
+  const url = await remoteCommitUrl(safeSha, safeFilePath)
+  if (!url) {
+    vscode.window.setStatusBarMessage('Culprit: no supported remote commit URL found.', REMOTE_STATUS_TTL)
+    return
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(url))
+}
+
+function commandSha(sha: unknown): string | undefined {
+  return typeof sha === 'string' && isValidCommitSha(sha) ? sha : undefined
+}
+
+function commandFilePath(filePath: unknown): string | undefined {
+  if (typeof filePath !== 'string') return undefined
+  const workspaceRoots = (vscode.workspace.workspaceFolders ?? []).map((folder) => folder.uri.fsPath)
+  return isWorkspaceFilePath(filePath, workspaceRoots) ? filePath : undefined
+}
+
+// Settings and blame options ------------------------------------------------
+
+function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
+  const info = blame.get(line)
+  if (!info) return { start: line, end: line }
+
+  let start = line
+  let end = line
+  while (blame.get(start - 1)?.sha === info.sha) start--
+  while (blame.get(end + 1)?.sha === info.sha) end++
+  return { start, end }
+}
+
+async function blameOptions(path: string, settings: Settings) {
+  if (!settings.ignoreRevsEnabled) return {}
+  const ignoreRevsFile = await defaultIgnoreRevsFile(path, settings.ignoreRevsFile)
+  return ignoreRevsFile ? { ignoreRevsFile } : {}
+}
+
+function readSettings(): Settings {
+  const cfg = vscode.workspace.getConfiguration('culprit')
+  return {
+    ignoreRevsEnabled: cfg.get<boolean>('ignoreRevs.enabled', true),
+    ignoreRevsFile: cfg.get<string>('ignoreRevs.file', '.git-blame-ignore-revs'),
+    authorFormat: cfg.get<AuthorFormat>('authorFormat', 'full'),
+    dateFormat: cfg.get<DateFormat>('dateFormat', 'relative'),
+    locale: cfg.get<string>('locale', ''),
+    summaryMaxLength: readNumberSetting(
+      cfg,
+      'summaryMaxLength',
+      DEFAULT_SUMMARY_MAX_LENGTH,
+      MIN_SUMMARY_MAX_LENGTH,
+      MAX_SUMMARY_MAX_LENGTH,
+    ),
+    inlineMaxLength: readNumberSetting(
+      cfg,
+      'inlineMaxLength',
+      DEFAULT_INLINE_MAX_LENGTH,
+      MIN_INLINE_MAX_LENGTH,
+      MAX_INLINE_MAX_LENGTH,
+    ),
+    inlineFormat: cfg.get<string>('inlineFormat', DEFAULT_INLINE_FORMAT),
+    maxFileLines: readNumberSetting(
+      cfg,
+      'maxFileLines',
+      DEFAULT_MAX_FILE_LINES,
+      MIN_MAX_FILE_LINES,
+      MAX_MAX_FILE_LINES,
+    ),
+  }
+}
+
+function readNumberSetting(
+  cfg: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
+  const value = cfg.get<number>(key, fallback)
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(max, value))
+}
+
+// Git watcher invalidation --------------------------------------------------
+
 function registerGitWatchers() {
+  const generation = ++watcherGeneration
   disposeGitWatchers()
 
-  // Watches the conventional in-tree .git directory. For worktrees/submodules
-  // (where .git is a pointer file to an external gitdir) ref changes are not
-  // observed here; the CACHE_TTL backstop covers those cases.
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const gitFileWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git'))
+    gitWatchers.push(
+      gitFileWatcher,
+      gitFileWatcher.onDidChange(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+      gitFileWatcher.onDidCreate(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+      gitFileWatcher.onDidDelete(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+    )
+
     for (const pattern of ['.git/HEAD', '.git/index', '.git/packed-refs', '.git/refs/heads/**']) {
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, pattern))
       gitWatchers.push(
@@ -291,7 +545,50 @@ function registerGitWatchers() {
         watcher.onDidDelete(scheduleGitInvalidation),
       )
     }
+
+    void registerExternalGitDirWatchers(folder, generation)
   }
+}
+
+async function registerExternalGitDirWatchers(folder: vscode.WorkspaceFolder, generation: number) {
+  const gitDir = await externalGitDir(folder)
+  if (!gitDir || generation !== watcherGeneration) return
+
+  for (const pattern of ['HEAD', 'index', 'packed-refs', 'refs/heads/**']) {
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(gitDir), pattern),
+    )
+    if (generation !== watcherGeneration) {
+      watcher.dispose()
+      continue
+    }
+    gitWatchers.push(
+      watcher,
+      watcher.onDidChange(scheduleGitInvalidation),
+      watcher.onDidCreate(scheduleGitInvalidation),
+      watcher.onDidDelete(scheduleGitInvalidation),
+    )
+  }
+}
+
+async function externalGitDir(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  try {
+    const gitFile = join(folder.uri.fsPath, '.git')
+    const raw = await readFile(gitFile, 'utf8')
+    const match = raw.match(/^gitdir:\s*(.+)\s*$/m)
+    if (!match) return undefined
+
+    const gitDir = match[1].trim()
+    const resolved = isAbsolute(gitDir) ? gitDir : resolve(dirname(gitFile), gitDir)
+    return isPlausibleGitDir(resolved) ? resolved : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isPlausibleGitDir(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.includes('/.git/') || normalized.endsWith('/.git') || normalized.endsWith('.git')
 }
 
 function disposeGitWatchers() {
@@ -306,22 +603,30 @@ function scheduleGitInvalidation() {
     clearCaches()
     const ed = vscode.window.activeTextEditor
     if (ed) {
-      lastActiveLine = -1
+      resetActivePosition()
       scheduleUpdate(ed)
     }
-  }, 100)
+  }, GIT_INVALIDATION_DEBOUNCE_MS)
 }
 
 function clearCaches() {
   cacheGeneration++
   blameCache.clear()
   historyCache.clear()
+  identityCache.clear()
   refreshInFlight.clear()
 }
 
 function invalidateFile(path: string) {
   blameCache.delete(path)
   historyCache.delete(path)
+}
+
+// Small utilities -----------------------------------------------------------
+
+function resetActivePosition() {
+  lastActiveLine = -1
+  lastActiveFile = ''
 }
 
 function getCachedEntry<T>(cache: Map<string, CacheEntry<T>>, key: string): CacheEntry<T> | undefined {
@@ -352,16 +657,4 @@ function setCached<T>(cache: Map<string, CacheEntry<T>>, key: string, data: T, m
     if (!oldest) break
     cache.delete(oldest)
   }
-}
-
-function esc(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/([\\`*_[\]{}()#+\-!|>~])/g, '\\$1')
-}
-
-function firstLine(text: string, maxLen = 72): string {
-  const line = text.split('\n')[0]
-  return line.length > maxLen ? `${line.slice(0, maxLen)}...` : line
 }
