@@ -2,13 +2,23 @@ import * as vscode from 'vscode'
 import { readFile } from 'node:fs/promises'
 import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
+  escapeMarkdown,
+  firstLine,
+  formatAttribution,
+  formatOwnershipRange,
+  formatTemplate,
+  type AuthorFormat,
+  type DateFormat,
+  type DisplaySettings,
+  type OwnershipRange,
+} from './display.js'
+import {
   blameFile,
   defaultIgnoreRevsFile,
   fileExistsInParent,
   fileHistory,
   isValidCommitSha,
   remoteCommitUrl,
-  relativeDate,
   type BlameInfo,
   type HistoryEntry,
 } from './git.js'
@@ -26,20 +36,14 @@ const GIT_INVALIDATION_DEBOUNCE_MS = 100
 const RECENT_FILE_COMMITS = 5
 const COPY_STATUS_TTL = 1_500
 const REMOTE_STATUS_TTL = 3_000
+const DEFAULT_INLINE_MAX_LENGTH = 140
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
-type DateFormat = 'relative' | 'absolute'
-type AuthorFormat = 'full' | 'first' | 'email' | 'hidden'
-type OwnershipRange = { start: number; end: number }
 type BlameContext = { info: BlameInfo; filePath: string; fileEntries: HistoryEntry[]; range: OwnershipRange }
-type Settings = {
+type Settings = DisplaySettings & {
   ignoreRevsEnabled: boolean
   ignoreRevsFile: string
-  authorFormat: AuthorFormat
-  dateFormat: DateFormat
-  locale: string
-  summaryMaxLength: number
   inlineFormat: string
 }
 
@@ -245,7 +249,7 @@ function buildHover(context: BlameContext): vscode.MarkdownString {
 
   md.appendMarkdown('**Line Commit**\n\n')
   appendCommitHoverLine(md, info, filePath, settings)
-  md.appendMarkdown(`${formatOwnershipRange(range)}\n\n`)
+  md.appendMarkdown(`${escapeMarkdown(formatOwnershipRange(range))}\n\n`)
 
   // Skip the file-history section when it would just repeat the line commit:
   // a single entry that is the same commit as the line blame.
@@ -267,20 +271,22 @@ function appendCommitHoverLine(
   filePath: string,
   settings: Settings,
 ) {
+  const summary = escapeMarkdown(firstLine(entry.summary, settings.summaryMaxLength, 'No commit summary'))
+  const attribution = escapeMarkdown(formatAttribution(entry, settings))
   md.appendMarkdown(
-    `${commitCompareAction(entry.sha, filePath)} ${esc(firstLine(entry.summary, settings.summaryMaxLength))} (${esc(formatAttribution(entry, settings))} ${commitUtilityActions(entry.sha, filePath)})\n\n`,
+    `${commitCompareAction(entry.sha, filePath)} **${summary}**\n\n${attribution} - ${commitUtilityActions(entry.sha, filePath)}\n\n`,
   )
 }
 
 function commitCompareAction(sha: string, filePath: string): string {
   const args = encodeURIComponent(JSON.stringify([sha, filePath]))
   const short = sha.slice(0, 7)
-  return `[$(git-commit) \`${short}\`](command:culprit.showDiff?${args})`
+  return `[$(git-commit) ${short} Compare](command:culprit.showDiff?${args})`
 }
 
 function commitUtilityActions(sha: string, filePath: string): string {
   const args = encodeURIComponent(JSON.stringify([sha, filePath]))
-  return `[$(copy)](command:culprit.copySha?${args}) [$(github)](command:culprit.openRemoteCommit?${args})`
+  return `[$(copy) Copy SHA](command:culprit.copySha?${args}) - [$(link-external) Open Remote](command:culprit.openRemoteCommit?${args})`
 }
 
 async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, context: BlameContext) {
@@ -376,11 +382,6 @@ function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
   return { start, end }
 }
 
-function formatOwnershipRange(range: OwnershipRange): string {
-  if (range.start === range.end) return `Same commit: line ${range.start}`
-  return `Same commit: lines ${range.start}-${range.end}`
-}
-
 async function blameOptions(path: string, settings: Settings) {
   if (!settings.ignoreRevsEnabled) return {}
   const ignoreRevsFile = await defaultIgnoreRevsFile(path, settings.ignoreRevsFile)
@@ -395,44 +396,16 @@ function readSettings(): Settings {
     authorFormat: cfg.get<AuthorFormat>('authorFormat', 'full'),
     dateFormat: cfg.get<DateFormat>('dateFormat', 'relative'),
     locale: cfg.get<string>('locale', ''),
-    summaryMaxLength: Math.max(20, Math.min(200, cfg.get<number>('summaryMaxLength', 50))),
+    summaryMaxLength: readNumberSetting(cfg, 'summaryMaxLength', 50, 20, 200),
+    inlineMaxLength: readNumberSetting(cfg, 'inlineMaxLength', DEFAULT_INLINE_MAX_LENGTH, 60, 300),
     inlineFormat: cfg.get<string>('inlineFormat', '${summary}, ${author} (${date})'),
   }
 }
 
-function formatTemplate(template: string, context: BlameContext, settings: Settings): string {
-  const values: Record<string, string> = {
-    sha: context.info.sha.slice(0, 7),
-    fullSha: context.info.sha,
-    author: formatAuthor(context.info, settings),
-    date: formatDate(context.info.date, settings),
-    summary: firstLine(context.info.summary, settings.summaryMaxLength),
-    range: context.range.start === context.range.end ? `${context.range.start}` : `${context.range.start}-${context.range.end}`,
-  }
-
-  return tidyFormattedText(template.replace(/\$\{(sha|fullSha|author|date|summary|range)\}/g, (_, key: string) => values[key] ?? ''))
-}
-
-function formatAuthor(entry: Pick<BlameInfo, 'author' | 'authorEmail'>, settings: Settings): string {
-  if (settings.authorFormat === 'hidden') return ''
-  if (settings.authorFormat === 'email') return entry.authorEmail || entry.author
-  if (settings.authorFormat === 'first') return entry.author.split(/\s+/)[0] || entry.authorEmail
-  return entry.author
-}
-
-function formatAttribution(entry: Pick<BlameInfo, 'author' | 'authorEmail' | 'date'>, settings: Settings): string {
-  const author = formatAuthor(entry, settings)
-  const date = formatDate(entry.date, settings)
-  return author ? `${author} - ${date}` : date
-}
-
-function tidyFormattedText(text: string): string {
-  return text.replace(/,\s+\(/g, ' (').replace(/\s{2,}/g, ' ').trim()
-}
-
-function formatDate(date: Date, settings: Settings): string {
-  if (settings.dateFormat === 'absolute') return date.toLocaleString(settings.locale || undefined)
-  return relativeDate(date)
+function readNumberSetting(cfg: vscode.WorkspaceConfiguration, key: string, fallback: number, min: number, max: number): number {
+  const value = cfg.get<number>(key, fallback)
+  if (!Number.isFinite(value)) return fallback
+  return Math.max(min, Math.min(max, value))
 }
 
 // Git watcher invalidation --------------------------------------------------
@@ -577,16 +550,4 @@ function setCached<T>(cache: Map<string, CacheEntry<T>>, key: string, data: T, m
     if (!oldest) break
     cache.delete(oldest)
   }
-}
-
-function esc(text: string): string {
-  return text
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/([\\`*_[\]{}()#+\-!|>~])/g, '\\$1')
-}
-
-function firstLine(text: string, maxLen = 72): string {
-  const line = text.split('\n')[0]
-  return line.length > maxLen ? `${line.slice(0, maxLen)}...` : line
 }

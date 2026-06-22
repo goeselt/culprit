@@ -90,6 +90,13 @@
           "minimum": 20,
           "maximum": 200,
           "description": "Maximum commit summary length shown in inline and hover text."
+        },
+        "culprit.inlineMaxLength": {
+          "type": "number",
+          "default": 140,
+          "minimum": 60,
+          "maximum": 300,
+          "description": "Maximum total length of the inline blame annotation after formatting."
         }
       }
     }
