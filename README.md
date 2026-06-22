@@ -41,18 +41,18 @@ Use the command palette to control behavior:
 
 Extension settings:
 
-| Setting                       | Default                            | Description                                           |
-| ----------------------------- | ---------------------------------- | ----------------------------------------------------- |
-| `culprit.enabled`             | `true`                             | Enable inline blame annotations.                      |
-| `culprit.ignoreRevs.enabled`  | `true`                             | Respect an ignore-revs file when blaming.             |
-| `culprit.ignoreRevs.file`     | `.git-blame-ignore-revs`           | Repository-relative ignore-revs file.                 |
-| `culprit.inlineFormat`        | `${summary}, ${author} (${date})`  | Inline format using supported tokens.                 |
-| `culprit.authorFormat`        | `full`                             | Author style: `full`, `first`, `email`, or `hidden`.  |
-| `culprit.dateFormat`          | `relative`                         | Date style: `relative` or `absolute`.                 |
-| `culprit.locale`              | ``                                 | Locale for absolute dates; empty uses VS Code default. |
-| `culprit.summaryMaxLength`    | `50`                               | Maximum commit summary length.                        |
-| `culprit.inlineMaxLength`     | `140`                              | Maximum total inline annotation length.               |
-| `culprit.maxFileLines`        | `10000`                            | Maximum file size Culprit will automatically blame.   |
+| Setting                      | Default                           | Description                                                       |
+| ---------------------------- | --------------------------------- | ----------------------------------------------------------------- |
+| `culprit.enabled`            | `true`                            | Enable inline blame annotations.                                  |
+| `culprit.ignoreRevs.enabled` | `true`                            | Respect an ignore-revs file when blaming.                         |
+| `culprit.ignoreRevs.file`    | `.git-blame-ignore-revs`          | Repository-relative ignore-revs file.                             |
+| `culprit.inlineFormat`       | `${summary}, ${author} (${date})` | Inline format using supported tokens.                             |
+| `culprit.authorFormat`       | `full`                            | Author style: `full`, `first`, `email`, or `hidden`.              |
+| `culprit.dateFormat`         | `relative`                        | Date style: `relative` or `absolute`.                             |
+| `culprit.locale`             | ``                                | Locale for absolute dates; empty uses Visual Studio Code default. |
+| `culprit.summaryMaxLength`   | `50`                              | Maximum commit summary length.                                    |
+| `culprit.inlineMaxLength`    | `140`                             | Maximum total inline annotation length.                           |
+| `culprit.maxFileLines`       | `10000`                           | Maximum file size Culprit will automatically blame.               |
 
 Supported format tokens: `${sha}`, `${fullSha}`, `${author}`, `${date}`, `${summary}`, `${range}`.
 

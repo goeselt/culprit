@@ -131,7 +131,10 @@ export async function fileHistory(filePath: string, count = 3): Promise<HistoryE
   const cwd = dirname(filePath)
   const limit = Number.isInteger(count) && count > 0 && count <= 100 ? count : 3
 
-  const out = await run(['log', `--max-count=${limit}`, '--pretty=format:%H%x00%an%x00%ae%x00%aI%x00%s', '--', filePath], cwd)
+  const out = await run(
+    ['log', `--max-count=${limit}`, '--pretty=format:%H%x00%an%x00%ae%x00%aI%x00%s', '--', filePath],
+    cwd,
+  )
 
   const entries: HistoryEntry[] = []
 

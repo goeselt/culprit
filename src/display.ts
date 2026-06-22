@@ -39,7 +39,6 @@ const SELF_AUTHOR_LABEL = 'You'
 const SELF_AUTHOR_COLOR = 'var(--vscode-terminal-ansiGreen)'
 const BOT_AUTHOR_COLOR = 'var(--vscode-terminal-ansiBlue)'
 const BIDI_CONTROL_RE = /[\u202A-\u202E\u2066-\u2069]/g
-const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
 
 // Inline annotation formatting ---------------------------------------------
 
@@ -50,16 +49,25 @@ export function formatTemplate(template: string, context: TemplateContext, setti
     author: formatAuthor(context.info, settings),
     date: formatDate(context.info.date, settings),
     summary: firstLine(context.info.summary, settings.summaryMaxLength, NO_COMMIT_SUMMARY),
-    range: context.range.start === context.range.end ? `${context.range.start}` : `${context.range.start}-${context.range.end}`,
+    range:
+      context.range.start === context.range.end
+        ? `${context.range.start}`
+        : `${context.range.start}-${context.range.end}`,
   }
 
-  const formatted = template.replace(/\$\{(sha|fullSha|author|date|summary|range)\}/g, (_, key: string) => values[key] ?? '')
+  const formatted = template.replace(
+    /\$\{(sha|fullSha|author|date|summary|range)\}/g,
+    (_, key: string) => values[key] ?? '',
+  )
   return truncateText(tidyFormattedText(normalizeDisplayText(formatted)), settings.inlineMaxLength)
 }
 
 // Commit metadata formatting ------------------------------------------------
 
-export function formatAuthor(entry: Pick<DisplayEntry, 'author' | 'authorEmail'>, settings: Pick<DisplaySettings, 'authorFormat'>): string {
+export function formatAuthor(
+  entry: Pick<DisplayEntry, 'author' | 'authorEmail'>,
+  settings: Pick<DisplaySettings, 'authorFormat'>,
+): string {
   if (settings.authorFormat === 'hidden') return ''
 
   const author = normalizeDisplayText(entry.author)
@@ -124,7 +132,7 @@ export function firstLine(text: string, maxLen = 72, fallback = ''): string {
 }
 
 export function normalizeDisplayText(text: string, fallback = ''): string {
-  const normalized = text.replace(BIDI_CONTROL_RE, '').replace(CONTROL_RE, ' ').replace(/\s+/g, ' ').trim()
+  const normalized = stripControlCharacters(text).replace(BIDI_CONTROL_RE, '').replace(/\s+/g, ' ').trim()
   return normalized || fallback
 }
 
@@ -143,14 +151,20 @@ export function escapeMarkdown(text: string): string {
 }
 
 function escapeHtml(text: string): string {
-  return normalizeDisplayText(text)
-    .replace(/&/g, '&amp;')
-    .replace(/</g, '&lt;')
-    .replace(/>/g, '&gt;')
+  return normalizeDisplayText(text).replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
 }
 
 function isBotAuthor(author: string, email: string): boolean {
   return /\bbot\b|\[bot\]|bot@/.test(author) || /\bbot\b|\[bot\]|bot@/.test(email)
+}
+
+function stripControlCharacters(text: string): string {
+  return [...text]
+    .map((char) => {
+      const code = char.charCodeAt(0)
+      return code === 0x09 || code === 0x0a || code === 0x0d || code >= 0x20 ? char : ' '
+    })
+    .join('')
 }
 
 function tidyFormattedText(text: string): string {

@@ -41,7 +41,8 @@ const GIT_INVALIDATION_DEBOUNCE_MS = 100
 const RECENT_FILE_COMMITS = 5
 const COPY_STATUS_TTL = 1_500
 const REMOTE_STATUS_TTL = 3_000
-const DEFAULT_INLINE_FORMAT = '${summary}, ${author} (${date})'
+const TEMPLATE_PREFIX = '$'
+const DEFAULT_INLINE_FORMAT = `${TEMPLATE_PREFIX}{summary}, ${TEMPLATE_PREFIX}{author} (${TEMPLATE_PREFIX}{date})`
 const DEFAULT_SUMMARY_MAX_LENGTH = 50
 const MIN_SUMMARY_MAX_LENGTH = 20
 const MAX_SUMMARY_MAX_LENGTH = 200
@@ -280,8 +281,9 @@ function getGitIdentity(path: string): Promise<AuthorIdentity | undefined> {
       if (generation === cacheGeneration) setCached(identityCache, path, data, MAX_IDENTITY_CACHE_ENTRIES, CACHE_TTL)
       return data
     })
-    .catch(() => {
-      if (generation === cacheGeneration) setCached(identityCache, path, undefined, MAX_IDENTITY_CACHE_ENTRIES, ERROR_CACHE_TTL)
+    .catch((): AuthorIdentity | undefined => {
+      if (generation === cacheGeneration)
+        setCached(identityCache, path, undefined, MAX_IDENTITY_CACHE_ENTRIES, ERROR_CACHE_TTL)
       return undefined
     })
 }
@@ -363,7 +365,12 @@ async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: num
   setLineDecoration(editor, lineIdx, lineEnd.character, updated)
 }
 
-function setLineDecoration(editor: vscode.TextEditor, lineIdx: number, lineEndCharacter: number, context: BlameContext) {
+function setLineDecoration(
+  editor: vscode.TextEditor,
+  lineIdx: number,
+  lineEndCharacter: number,
+  context: BlameContext,
+) {
   const settings = readSettings()
   editor.setDecorations(decorationType, [
     {
@@ -493,7 +500,13 @@ function readSettings(): Settings {
   }
 }
 
-function readNumberSetting(cfg: vscode.WorkspaceConfiguration, key: string, fallback: number, min: number, max: number): number {
+function readNumberSetting(
+  cfg: vscode.WorkspaceConfiguration,
+  key: string,
+  fallback: number,
+  min: number,
+  max: number,
+): number {
   const value = cfg.get<number>(key, fallback)
   if (!Number.isFinite(value)) return fallback
   return Math.max(min, Math.min(max, value))
@@ -542,7 +555,9 @@ async function registerExternalGitDirWatchers(folder: vscode.WorkspaceFolder, ge
   if (!gitDir || generation !== watcherGeneration) return
 
   for (const pattern of ['HEAD', 'index', 'packed-refs', 'refs/heads/**']) {
-    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(gitDir), pattern))
+    const watcher = vscode.workspace.createFileSystemWatcher(
+      new vscode.RelativePattern(vscode.Uri.file(gitDir), pattern),
+    )
     if (generation !== watcherGeneration) {
       watcher.dispose()
       continue

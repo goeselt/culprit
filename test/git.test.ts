@@ -152,9 +152,18 @@ test('blameFile does not execute configured textconv commands', async () => {
 
 test('remoteCommitWebUrl supports common Git remote formats without executing remote data', () => {
   const sha = 'a'.repeat(40)
-  assert.equal(remoteCommitWebUrl('git@github.com:goeselt/culprit.git', sha), `https://github.com/goeselt/culprit/commit/${sha}`)
-  assert.equal(remoteCommitWebUrl('https://gitlab.com/goeselt/culprit.git', sha), `https://gitlab.com/goeselt/culprit/commit/${sha}`)
-  assert.equal(remoteCommitWebUrl('ssh://git@bitbucket.org/goeselt/culprit.git', sha), `https://bitbucket.org/goeselt/culprit/commits/${sha}`)
+  assert.equal(
+    remoteCommitWebUrl('git@github.com:goeselt/culprit.git', sha),
+    `https://github.com/goeselt/culprit/commit/${sha}`,
+  )
+  assert.equal(
+    remoteCommitWebUrl('https://gitlab.com/goeselt/culprit.git', sha),
+    `https://gitlab.com/goeselt/culprit/commit/${sha}`,
+  )
+  assert.equal(
+    remoteCommitWebUrl('ssh://git@bitbucket.org/goeselt/culprit.git', sha),
+    `https://bitbucket.org/goeselt/culprit/commits/${sha}`,
+  )
   assert.equal(remoteCommitWebUrl('javascript:alert(1)', sha), undefined)
   assert.equal(remoteCommitWebUrl('git@github.com/evil:goeselt/culprit.git', sha), undefined)
   assert.equal(remoteCommitWebUrl('git@github.com:goeselt/../culprit.git', sha), undefined)

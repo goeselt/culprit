@@ -32,35 +32,47 @@ const context: TemplateContext = {
   range: { start: 3, end: 5 },
 }
 
+const templatePrefix = '$'
+const summaryAuthorTemplate = `${templatePrefix}{summary}, ${templatePrefix}{author}`
+const fullInlineTemplate = `${templatePrefix}{summary}, ${templatePrefix}{author} (${templatePrefix}{date})`
+
 test('formatTemplate normalizes repo-controlled display text', () => {
-  const formatted = formatTemplate('${summary}, ${author}', {
-    ...context,
-    info: {
-      ...context.info,
-      author: 'Ada\nLovelace\u202E',
-      summary: 'Fix\tannotation\u0007spacing\nignored body',
+  const formatted = formatTemplate(
+    summaryAuthorTemplate,
+    {
+      ...context,
+      info: {
+        ...context.info,
+        author: 'Ada\nLovelace\u202E',
+        summary: 'Fix\tannotation\u0007spacing\nignored body',
+      },
     },
-  }, settings)
+    settings,
+  )
 
   assert.equal(formatted, 'Fix annotation spacing, Ada Lovelace')
 })
 
 test('formatTemplate keeps inline annotations bounded', () => {
-  const formatted = formatTemplate('${summary}, ${author}', {
-    ...context,
-    info: {
-      ...context.info,
-      author: 'A'.repeat(80),
-      summary: 'S'.repeat(80),
+  const formatted = formatTemplate(
+    summaryAuthorTemplate,
+    {
+      ...context,
+      info: {
+        ...context.info,
+        author: 'A'.repeat(80),
+        summary: 'S'.repeat(80),
+      },
     },
-  }, { ...settings, summaryMaxLength: 200, inlineMaxLength: 30 })
+    { ...settings, summaryMaxLength: 200, inlineMaxLength: 30 },
+  )
 
   assert.equal(formatted.length, 30)
   assert.match(formatted, /\.\.\.$/)
 })
 
 test('formatTemplate tidies missing author output', () => {
-  const formatted = formatTemplate('${summary}, ${author} (${date})', context, {
+  const formatted = formatTemplate(fullInlineTemplate, context, {
     ...settings,
     authorFormat: 'hidden',
   })
@@ -89,7 +101,10 @@ test('small display helpers produce readable hover text', () => {
 test('authorTone classifies current user, bots, and other authors', () => {
   assert.equal(authorTone(context.info, { author: 'Ada Lovelace', authorEmail: '' }), 'self')
   assert.equal(authorTone(context.info, { author: '', authorEmail: 'ada@example.invalid' }), 'self')
-  assert.equal(authorTone({ author: 'dependabot[bot]', authorEmail: '49699333+dependabot[bot]@users.noreply.github.com' }), 'bot')
+  assert.equal(
+    authorTone({ author: 'dependabot[bot]', authorEmail: '49699333+dependabot[bot]@users.noreply.github.com' }),
+    'bot',
+  )
   assert.equal(authorTone(context.info, { author: 'Grace Hopper', authorEmail: 'grace@example.invalid' }), 'default')
 })
 
