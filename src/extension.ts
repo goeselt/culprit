@@ -73,16 +73,19 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   ctx.subscriptions.push(
     decorationType,
-    vscode.window.onDidChangeTextEditorSelection((e) => scheduleUpdate(e.textEditor)),
-    vscode.window.onDidChangeActiveTextEditor((e) => e && scheduleUpdate(e)),
+    vscode.window.onDidChangeTextEditorSelection((e) => {
+      scheduleUpdate(e.textEditor)
+    }),
+    vscode.window.onDidChangeActiveTextEditor((e) => {
+      if (e) scheduleUpdate(e)
+    }),
     vscode.workspace.onDidChangeTextDocument((e) => {
       const ed = vscode.window.activeTextEditor
       if (ed?.document !== e.document) return
       lastActiveLine = -1
       lastActiveFile = ''
-      if (e.document.isDirty) {
-        ed.setDecorations(decorationType, [])
-      } else scheduleUpdate(ed)
+      if (e.document.isDirty) clearEditorDecorations(ed)
+      else scheduleUpdate(ed)
     }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       invalidateFile(doc.uri.fsPath)
@@ -100,7 +103,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (!ed) return
       lastActiveLine = -1
       if (enabled) scheduleUpdate(ed)
-      else ed.setDecorations(decorationType, [])
+      else clearEditorDecorations(ed)
     }),
     vscode.workspace.onDidChangeWorkspaceFolders(() => registerGitWatchers()),
     vscode.commands.registerCommand('culprit.toggle', toggleEnabled),
@@ -128,7 +131,7 @@ function toggleEnabled() {
   if (!ed) return
   lastActiveLine = -1
   if (enabled) scheduleUpdate(ed)
-  else ed.setDecorations(decorationType, [])
+  else clearEditorDecorations(ed)
 }
 
 function scheduleUpdate(editor: vscode.TextEditor) {
@@ -140,7 +143,7 @@ function scheduleUpdate(editor: vscode.TextEditor) {
 
 async function updateDecoration(editor: vscode.TextEditor) {
   if (!enabled || editor.document.uri.scheme !== 'file' || editor.document.isDirty) {
-    editor.setDecorations(decorationType, [])
+    clearEditorDecorations(editor)
     lastActiveLine = -1
     lastActiveFile = ''
     return
@@ -151,7 +154,8 @@ async function updateDecoration(editor: vscode.TextEditor) {
 
   if (path === lastActiveFile && activeLine === lastActiveLine) return
 
-  editor.setDecorations(decorationType, [])
+  clearInactiveEditorDecorations(editor)
+  clearEditorDecorations(editor)
 
   const blame = await getFileBlame(path)
   const info = blame.get(activeLine)
@@ -162,7 +166,7 @@ async function updateDecoration(editor: vscode.TextEditor) {
   lastActiveFile = path
 
   if (!info || info.isUncommitted) {
-    editor.setDecorations(decorationType, [])
+    clearEditorDecorations(editor)
     return
   }
 
@@ -228,9 +232,9 @@ function buildHover(context: BlameContext): vscode.MarkdownString {
   md.isTrusted = { enabledCommands: ['culprit.copySha', 'culprit.openRemoteCommit', 'culprit.showDiff'] }
   md.supportThemeIcons = true
 
-  md.appendMarkdown('**Recent Line Commit**\n\n')
+  md.appendMarkdown('**Line Commit**\n\n')
   appendCommitHoverLine(md, info, filePath, settings)
-  md.appendMarkdown(`Lines ${range.start}-${range.end}\n\n`)
+  md.appendMarkdown(`${formatOwnershipRange(range)}\n\n`)
 
   // Skip the file-history section when it would just repeat the line commit:
   // a single entry that is the same commit as the line blame.
@@ -290,14 +294,24 @@ function setLineDecoration(editor: vscode.TextEditor, lineIdx: number, lineEndCh
   editor.setDecorations(decorationType, [
     {
       range: new vscode.Range(lineIdx, lineEndCharacter, lineIdx, lineEndCharacter),
-      hoverMessage: buildHover(context),
       renderOptions: {
         after: {
           contentText: formatTemplate(settings.inlineFormat, context, settings),
         },
       },
+      hoverMessage: buildHover(context),
     },
   ])
+}
+
+function clearEditorDecorations(editor: vscode.TextEditor) {
+  editor.setDecorations(decorationType, [])
+}
+
+function clearInactiveEditorDecorations(activeEditor: vscode.TextEditor) {
+  for (const editor of vscode.window.visibleTextEditors) {
+    if (editor !== activeEditor) clearEditorDecorations(editor)
+  }
 }
 
 async function showDiff(sha: string, filePath: string) {
@@ -323,13 +337,14 @@ async function showDiff(sha: string, filePath: string) {
 async function copySha(sha: string) {
   if (!isValidCommitSha(sha)) return
   await vscode.env.clipboard.writeText(sha)
+  vscode.window.setStatusBarMessage(`Culprit: copied ${sha.slice(0, 7)}`, 1_500)
 }
 
 async function openRemoteCommit(sha: string, filePath: string) {
   if (!isValidCommitSha(sha) || !filePath) return
   const url = await remoteCommitUrl(sha, filePath)
   if (!url) {
-    void vscode.window.showInformationMessage('Culprit: no supported remote commit URL found.')
+    vscode.window.setStatusBarMessage('Culprit: no supported remote commit URL found.', 3_000)
     return
   }
   await vscode.env.openExternal(vscode.Uri.parse(url))
@@ -344,6 +359,11 @@ function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
   while (blame.get(start - 1)?.sha === info.sha) start--
   while (blame.get(end + 1)?.sha === info.sha) end++
   return { start, end }
+}
+
+function formatOwnershipRange(range: OwnershipRange): string {
+  if (range.start === range.end) return `Same commit: line ${range.start}`
+  return `Same commit: lines ${range.start}-${range.end}`
 }
 
 async function blameOptions(path: string, settings: Settings) {
@@ -375,7 +395,7 @@ function formatTemplate(template: string, context: BlameContext, settings: Setti
     range: context.range.start === context.range.end ? `${context.range.start}` : `${context.range.start}-${context.range.end}`,
   }
 
-  return template.replace(/\$\{(sha|fullSha|author|date|summary|range)\}/g, (_, key: string) => values[key] ?? '')
+  return tidyFormattedText(template.replace(/\$\{(sha|fullSha|author|date|summary|range)\}/g, (_, key: string) => values[key] ?? ''))
 }
 
 function formatAuthor(entry: Pick<BlameInfo, 'author' | 'authorEmail'>, settings: Settings): string {
@@ -389,6 +409,10 @@ function formatAttribution(entry: Pick<BlameInfo, 'author' | 'authorEmail' | 'da
   const author = formatAuthor(entry, settings)
   const date = formatDate(entry.date, settings)
   return author ? `${author} - ${date}` : date
+}
+
+function tidyFormattedText(text: string): string {
+  return text.replace(/,\s+\(/g, ' (').replace(/\s{2,}/g, ' ').trim()
 }
 
 function formatDate(date: Date, settings: Settings): string {

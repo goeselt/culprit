@@ -1,8 +1,8 @@
 # Culprit
 
-Visual Studio Code extension that shows inline Git blame for the current line while you read or edit code. Hover the
-annotation to see author, date, and recent file commits. Click a commit hash to open the diff -- without leaving the
-editor.
+Visual Studio Code extension that shows low-noise inline Git blame for the current line while you read or edit code.
+Hover the annotation to inspect the line commit, copy the SHA, open the remote commit, compare with the previous
+revision, and scan recent file commits without leaving the editor.
 
 ## Quick Start
 
@@ -13,17 +13,21 @@ editor.
 You will see an inline annotation such as:
 
 ```text
-abc1234: tighten hover command handling
+tighten hover command handling, Ada Lovelace (2 weeks ago)
 ```
 
-Hover the annotation to view author, date, and recent commits for the file. Click a commit hash to open the diff.
+Hover the annotation to view the commit hash, author, date, ownership range, and recent commits for the file. Click the
+hash to compare with the previous revision, the copy icon to copy the SHA, or the remote icon to open the commit in your
+Git host.
 
 ## Features
 
-- Shows inline blame for the active line with commit hash and summary.
-- Displays author and relative date in hover details.
-- Lists recent commits for the current file in the same hover.
+- Shows inline blame for the active line with configurable summary, author, date, and range tokens.
+- Displays the line commit, same-commit line range, and recent file commits in the hover.
 - Opens commit diffs directly from clickable commit links.
+- Copies commit SHAs and opens supported remote commit URLs from hover actions.
+- Respects `.git-blame-ignore-revs` by default for formatter or bulk rewrite commits.
+- Watches worktree and submodule Git directories when `.git` points outside the workspace folder.
 - Stays low-noise by annotating only the current line.
 
 ## Usage
@@ -35,11 +39,20 @@ Use the command palette to control behavior:
 | `Culprit: Toggle Inline Blame` | Enable or disable annotations. |
 | `Culprit: Show Commit Diff`    | Open the diff for a commit.    |
 
-Extension setting:
+Extension settings:
 
-| Setting           | Default | Description                      |
-| ----------------- | ------- | -------------------------------- |
-| `culprit.enabled` | `true`  | Enable inline blame annotations. |
+| Setting                       | Default                            | Description                                           |
+| ----------------------------- | ---------------------------------- | ----------------------------------------------------- |
+| `culprit.enabled`             | `true`                             | Enable inline blame annotations.                      |
+| `culprit.ignoreRevs.enabled`  | `true`                             | Respect an ignore-revs file when blaming.             |
+| `culprit.ignoreRevs.file`     | `.git-blame-ignore-revs`           | Repository-relative ignore-revs file.                 |
+| `culprit.inlineFormat`        | `${summary}, ${author} (${date})`  | Inline format using supported tokens.                 |
+| `culprit.authorFormat`        | `full`                             | Author style: `full`, `first`, `email`, or `hidden`.  |
+| `culprit.dateFormat`          | `relative`                         | Date style: `relative` or `absolute`.                 |
+| `culprit.locale`              | ``                                 | Locale for absolute dates; empty uses VS Code default. |
+| `culprit.summaryMaxLength`    | `50`                               | Maximum commit summary length.                        |
+
+Supported format tokens: `${sha}`, `${fullSha}`, `${author}`, `${date}`, `${summary}`, `${range}`.
 
 ## Requirements
 
