@@ -1,4 +1,6 @@
 import { execFile } from 'node:child_process'
+import { constants } from 'node:fs'
+import { access } from 'node:fs/promises'
 import { dirname, isAbsolute, relative, resolve, sep } from 'node:path'
 
 const GIT_TIMEOUT_MS = 5_000
@@ -11,6 +13,7 @@ const toplevelCache = new Map<string, string>()
 export interface BlameInfo {
   sha: string
   author: string
+  authorEmail: string
   date: Date
   summary: string
   isUncommitted: boolean
@@ -19,8 +22,13 @@ export interface BlameInfo {
 export interface HistoryEntry {
   sha: string
   author: string
+  authorEmail: string
   date: Date
   summary: string
+}
+
+export interface BlameOptions {
+  ignoreRevsFile?: string
 }
 
 export function isValidCommitSha(sha: string): boolean {
@@ -47,19 +55,27 @@ function run(args: string[], cwd: string): Promise<string> {
  * callers serve every line lookup from the result, instead of spawning one git
  * process per line.
  */
-export async function blameFile(filePath: string): Promise<Map<number, BlameInfo>> {
+export async function blameFile(filePath: string, options: BlameOptions = {}): Promise<Map<number, BlameInfo>> {
   const cwd = dirname(filePath)
-  const out = await run(['blame', '--porcelain', '--', filePath], cwd)
+  const args = ['blame', '--porcelain']
+
+  if (options.ignoreRevsFile) {
+    const ignoreRevsFile = await usableIgnoreRevsFile(options.ignoreRevsFile)
+    if (ignoreRevsFile) args.push('--ignore-revs-file', ignoreRevsFile)
+  }
+
+  const out = await run([...args, '--', filePath], cwd)
   const result = new Map<number, BlameInfo>()
 
   // Porcelain emits a commit's header fields (author, time, summary) only on its
   // first occurrence; later lines for the same commit repeat just the SHA line.
   // Cache the fields by SHA so repeated commits reuse them.
-  const seen = new Map<string, { author: string; date: Date; summary: string }>()
+  const seen = new Map<string, { author: string; authorEmail: string; date: Date; summary: string }>()
 
   let sha = ''
   let lineNumber = 0
   let author = ''
+  let authorEmail = ''
   let date = new Date(0)
   let summary = ''
 
@@ -72,13 +88,17 @@ export async function blameFile(filePath: string): Promise<Map<number, BlameInfo
       lineNumber = Number.parseInt(hdr[2], 10)
       const cached = seen.get(sha)
       if (cached) {
-        ;({ author, date, summary } = cached)
+        ;({ author, authorEmail, date, summary } = cached)
       }
       continue
     }
 
     if (raw.startsWith('author ')) {
       author = raw.slice(7)
+      continue
+    }
+    if (raw.startsWith('author-mail ')) {
+      authorEmail = raw.slice(12).replace(/^<|>$/g, '')
       continue
     }
     if (raw.startsWith('author-time ')) {
@@ -91,8 +111,8 @@ export async function blameFile(filePath: string): Promise<Map<number, BlameInfo
     }
 
     if (raw.startsWith('\t')) {
-      if (!seen.has(sha)) seen.set(sha, { author, date, summary })
-      result.set(lineNumber, { sha, author, date, summary, isUncommitted: /^0+$/.test(sha) })
+      if (!seen.has(sha)) seen.set(sha, { author, authorEmail, date, summary })
+      result.set(lineNumber, { sha, author, authorEmail, date, summary, isUncommitted: /^0+$/.test(sha) })
     }
   }
 
@@ -106,18 +126,19 @@ export async function fileHistory(filePath: string, count = 3): Promise<HistoryE
   const cwd = dirname(filePath)
   const limit = Number.isInteger(count) && count > 0 && count <= 100 ? count : 3
 
-  const out = await run(['log', `--max-count=${limit}`, '--pretty=format:%H%x00%an%x00%aI%x00%s', '--', filePath], cwd)
+  const out = await run(['log', `--max-count=${limit}`, '--pretty=format:%H%x00%an%x00%ae%x00%aI%x00%s', '--', filePath], cwd)
 
   const entries: HistoryEntry[] = []
 
   for (const line of out.split('\n')) {
     const parts = line.split('\x00')
-    if (parts.length >= 4 && SHA_RE.test(parts[0])) {
+    if (parts.length >= 5 && SHA_RE.test(parts[0])) {
       entries.push({
         sha: parts[0],
         author: parts[1],
-        date: new Date(parts[2]),
-        summary: parts[3],
+        authorEmail: parts[2],
+        date: new Date(parts[3]),
+        summary: parts[4],
       })
     }
   }
@@ -144,10 +165,73 @@ export async function fileExistsInParent(sha: string, filePath: string): Promise
   }
 }
 
+export async function defaultIgnoreRevsFile(filePath: string, configuredPath: string): Promise<string | undefined> {
+  const trimmed = configuredPath.trim()
+  if (!trimmed) return undefined
+
+  const cwd = dirname(filePath)
+  const root = await repoToplevel(cwd)
+  const candidate = isAbsolute(trimmed) ? trimmed : resolve(root, trimmed)
+  const rel = repoRelativePath(root, candidate)
+  if (!rel) return undefined
+
+  return usableIgnoreRevsFile(candidate)
+}
+
+export async function remoteCommitUrl(sha: string, filePath: string): Promise<string | undefined> {
+  if (!isValidCommitSha(sha)) return undefined
+
+  try {
+    const remote = (await run(['remote', 'get-url', 'origin'], dirname(filePath))).trim()
+    return remoteCommitWebUrl(remote, sha)
+  } catch {
+    return undefined
+  }
+}
+
+export function remoteCommitWebUrl(remote: string, sha: string): string | undefined {
+  if (!isValidCommitSha(sha)) return undefined
+
+  const parsed = parseRemote(remote.trim())
+  if (!parsed) return undefined
+  if (!/^[a-z0-9.-]+$/i.test(parsed.host)) return undefined
+
+  const path = parsed.path.replace(/\.git$/i, '').replace(/^\/+|\/+$/g, '')
+  const parts = path.split('/').filter(Boolean)
+  if (parts.length < 2 || parts.some((part) => part === '..' || part.includes('\\'))) return undefined
+
+  const repoPath = parts.map(encodeURIComponent).join('/')
+  const commitPath = parsed.host.toLowerCase() === 'bitbucket.org' ? 'commits' : 'commit'
+  return `https://${parsed.host}/${repoPath}/${commitPath}/${sha}`
+}
+
 function repoRelativePath(root: string, filePath: string): string | undefined {
   const rel = relative(resolve(root), resolve(filePath))
   if (!rel || rel === '..' || rel.startsWith(`..${sep}`) || isAbsolute(rel)) return undefined
   return rel.replace(/\\/g, '/')
+}
+
+async function usableIgnoreRevsFile(filePath: string): Promise<string | undefined> {
+  try {
+    await access(filePath, constants.R_OK)
+    return filePath
+  } catch {
+    return undefined
+  }
+}
+
+function parseRemote(remote: string): { host: string; path: string } | undefined {
+  const scpLike = remote.match(/^git@([^:]+):(.+)$/)
+  if (scpLike) return { host: scpLike[1], path: scpLike[2] }
+
+  try {
+    const url = new URL(remote)
+    if (!['http:', 'https:', 'ssh:'].includes(url.protocol)) return undefined
+    if (!url.hostname) return undefined
+    return { host: url.hostname, path: url.pathname }
+  } catch {
+    return undefined
+  }
 }
 
 async function repoToplevel(cwd: string): Promise<string> {

@@ -1,10 +1,13 @@
 import * as vscode from 'vscode'
-import { basename } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   blameFile,
+  defaultIgnoreRevsFile,
   fileExistsInParent,
   fileHistory,
   isValidCommitSha,
+  remoteCommitUrl,
   relativeDate,
   type BlameInfo,
   type HistoryEntry,
@@ -21,6 +24,19 @@ const MAX_HISTORY_CACHE_ENTRIES = 100
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
+type DateFormat = 'relative' | 'absolute'
+type AuthorFormat = 'full' | 'first' | 'email' | 'hidden'
+type OwnershipRange = { start: number; end: number }
+type BlameContext = { info: BlameInfo; filePath: string; fileEntries: HistoryEntry[]; range: OwnershipRange }
+type Settings = {
+  ignoreRevsEnabled: boolean
+  ignoreRevsFile: string
+  authorFormat: AuthorFormat
+  dateFormat: DateFormat
+  locale: string
+  summaryMaxLength: number
+  inlineFormat: string
+}
 
 const blameCache = new Map<string, CacheEntry<FileBlame>>()
 const historyCache = new Map<string, CacheEntry<HistoryEntry[]>>()
@@ -32,6 +48,7 @@ let decorationType: vscode.TextEditorDecorationType
 let debounceTimer: ReturnType<typeof setTimeout> | undefined
 let gitInvalidationTimer: ReturnType<typeof setTimeout> | undefined
 let cacheGeneration = 0
+let watcherGeneration = 0
 let lastActiveLine = -1
 let lastActiveFile = ''
 
@@ -46,9 +63,8 @@ export function activate(ctx: vscode.ExtensionContext) {
 
   decorationType = vscode.window.createTextEditorDecorationType({
     after: {
-      color: new vscode.ThemeColor('editorGhostText.foreground'),
-      margin: '0 0 0 3em',
-      fontStyle: 'italic',
+      color: new vscode.ThemeColor('git.blame.editorDecorationForeground'),
+      margin: '0 0 0 50px',
     },
     rangeBehavior: vscode.DecorationRangeBehavior.ClosedOpen,
   })
@@ -64,8 +80,9 @@ export function activate(ctx: vscode.ExtensionContext) {
       if (ed?.document !== e.document) return
       lastActiveLine = -1
       lastActiveFile = ''
-      if (e.document.isDirty) ed.setDecorations(decorationType, [])
-      else scheduleUpdate(ed)
+      if (e.document.isDirty) {
+        ed.setDecorations(decorationType, [])
+      } else scheduleUpdate(ed)
     }),
     vscode.workspace.onDidSaveTextDocument((doc) => {
       invalidateFile(doc.uri.fsPath)
@@ -76,9 +93,10 @@ export function activate(ctx: vscode.ExtensionContext) {
       }
     }),
     vscode.workspace.onDidChangeConfiguration((e) => {
-      if (!e.affectsConfiguration('culprit.enabled')) return
+      if (!e.affectsConfiguration('culprit')) return
       enabled = vscode.workspace.getConfiguration('culprit').get<boolean>('enabled', true)
       const ed = vscode.window.activeTextEditor
+      clearCaches()
       if (!ed) return
       lastActiveLine = -1
       if (enabled) scheduleUpdate(ed)
@@ -87,6 +105,8 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeWorkspaceFolders(() => registerGitWatchers()),
     vscode.commands.registerCommand('culprit.toggle', toggleEnabled),
     vscode.commands.registerCommand('culprit.showDiff', showDiff),
+    vscode.commands.registerCommand('culprit.copySha', copySha),
+    vscode.commands.registerCommand('culprit.openRemoteCommit', openRemoteCommit),
     { dispose: disposeGitWatchers },
   )
 
@@ -133,7 +153,8 @@ async function updateDecoration(editor: vscode.TextEditor) {
 
   editor.setDecorations(decorationType, [])
 
-  const info = await getLineBlame(path, activeLine)
+  const blame = await getFileBlame(path)
+  const info = blame.get(activeLine)
   const current = vscode.window.activeTextEditor
   if (current !== editor || editor.selection.active.line + 1 !== activeLine) return
 
@@ -148,14 +169,11 @@ async function updateDecoration(editor: vscode.TextEditor) {
   const lineIdx = activeLine - 1
   const lineEnd = editor.document.lineAt(lineIdx).range.end
   const fileEntries = getCachedEntry(historyCache, path)?.data ?? []
+  const range = ownershipRange(blame, activeLine)
+  const context = { info, filePath: path, fileEntries, range }
 
-  setLineDecoration(editor, lineIdx, lineEnd.character, info, fileEntries, path)
-  if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, info, path)
-}
-
-async function getLineBlame(path: string, lineNumber: number): Promise<BlameInfo | undefined> {
-  const blame = await getFileBlame(path)
-  return blame.get(lineNumber)
+  setLineDecoration(editor, lineIdx, lineEnd.character, context)
+  if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, context)
 }
 
 function getFileBlame(path: string): Promise<FileBlame> {
@@ -166,7 +184,9 @@ function getFileBlame(path: string): Promise<FileBlame> {
   if (inFlight) return inFlight
 
   const generation = cacheGeneration
-  const promise = blameFile(path)
+  const settings = readSettings()
+  const promise = blameOptions(path, settings)
+    .then((options) => blameFile(path, options))
     .then((data) => {
       if (generation === cacheGeneration) setCached(blameCache, path, data, MAX_BLAME_FILES, CACHE_TTL)
       return data
@@ -201,16 +221,16 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
     })
 }
 
-function buildHover(info: BlameInfo, fileEntries: HistoryEntry[], filePath: string): vscode.MarkdownString {
+function buildHover(context: BlameContext): vscode.MarkdownString {
+  const { info, fileEntries, filePath, range } = context
+  const settings = readSettings()
   const md = new vscode.MarkdownString(undefined, true)
-  md.isTrusted = { enabledCommands: ['culprit.showDiff'] }
+  md.isTrusted = { enabledCommands: ['culprit.copySha', 'culprit.openRemoteCommit', 'culprit.showDiff'] }
+  md.supportThemeIcons = true
 
-  const short = info.sha.slice(0, 7)
-  const args = encodeURIComponent(JSON.stringify([info.sha, filePath]))
   md.appendMarkdown('**Recent Line Commit**\n\n')
-  md.appendMarkdown(
-    `[\`${short}\`](command:culprit.showDiff?${args}) ${esc(firstLine(info.summary))} (${esc(info.author)} - ${relativeDate(info.date)})\n\n`,
-  )
+  appendCommitHoverLine(md, info, filePath, settings)
+  md.appendMarkdown(`Lines ${range.start}-${range.end}\n\n`)
 
   // Skip the file-history section when it would just repeat the line commit:
   // a single entry that is the same commit as the line blame.
@@ -219,44 +239,61 @@ function buildHover(info: BlameInfo, fileEntries: HistoryEntry[], filePath: stri
     md.appendMarkdown('---\n\n')
     md.appendMarkdown('**Recent File Commits**\n\n')
     for (const e of fileEntries) {
-      const s = e.sha.slice(0, 7)
-      const a = encodeURIComponent(JSON.stringify([e.sha, filePath]))
-      md.appendMarkdown(
-        `[\`${s}\`](command:culprit.showDiff?${a}) ${esc(firstLine(e.summary))} (${esc(e.author)} - ${relativeDate(e.date)})\n\n`,
-      )
+      appendCommitHoverLine(md, e, filePath, settings)
     }
   }
 
   return md
 }
 
-async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, info: BlameInfo, path: string) {
-  const fileEntries = await getFileHistory(path)
+function appendCommitHoverLine(
+  md: vscode.MarkdownString,
+  entry: Pick<BlameInfo, 'sha' | 'summary' | 'author' | 'authorEmail' | 'date'>,
+  filePath: string,
+  settings: Settings,
+) {
+  md.appendMarkdown(
+    `${commitCompareAction(entry.sha, filePath)} ${esc(firstLine(entry.summary, settings.summaryMaxLength))} (${esc(formatAttribution(entry, settings))} ${commitUtilityActions(entry.sha, filePath)})\n\n`,
+  )
+}
+
+function commitCompareAction(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  const short = sha.slice(0, 7)
+  return `[$(git-commit) \`${short}\`](command:culprit.showDiff?${args})`
+}
+
+function commitUtilityActions(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  return `[$(copy)](command:culprit.copySha?${args}) [$(github)](command:culprit.openRemoteCommit?${args})`
+}
+
+async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, context: BlameContext) {
+  const fileEntries = await getFileHistory(context.filePath)
   const current = vscode.window.activeTextEditor
-  if (current !== editor || editor.document.uri.fsPath !== path || editor.selection.active.line + 1 !== activeLine) {
+  if (
+    current !== editor ||
+    editor.document.uri.fsPath !== context.filePath ||
+    editor.selection.active.line + 1 !== activeLine
+  ) {
     return
   }
 
   const lineIdx = activeLine - 1
   const lineEnd = editor.document.lineAt(lineIdx).range.end
-  setLineDecoration(editor, lineIdx, lineEnd.character, info, fileEntries, path)
+  const updated = { ...context, fileEntries }
+  setLineDecoration(editor, lineIdx, lineEnd.character, updated)
 }
 
-function setLineDecoration(
-  editor: vscode.TextEditor,
-  lineIdx: number,
-  lineEndCharacter: number,
-  info: BlameInfo,
-  fileEntries: HistoryEntry[],
-  path: string,
-) {
+function setLineDecoration(editor: vscode.TextEditor, lineIdx: number, lineEndCharacter: number, context: BlameContext) {
+  const settings = readSettings()
   editor.setDecorations(decorationType, [
     {
       range: new vscode.Range(lineIdx, lineEndCharacter, lineIdx, lineEndCharacter),
-      hoverMessage: buildHover(info, fileEntries, path),
+      hoverMessage: buildHover(context),
       renderOptions: {
         after: {
-          contentText: `${info.sha.slice(0, 7)}: ${firstLine(info.summary, 50)}`,
+          contentText: formatTemplate(settings.inlineFormat, context, settings),
         },
       },
     },
@@ -283,13 +320,104 @@ async function showDiff(sha: string, filePath: string) {
   }
 }
 
+async function copySha(sha: string) {
+  if (!isValidCommitSha(sha)) return
+  await vscode.env.clipboard.writeText(sha)
+}
+
+async function openRemoteCommit(sha: string, filePath: string) {
+  if (!isValidCommitSha(sha) || !filePath) return
+  const url = await remoteCommitUrl(sha, filePath)
+  if (!url) {
+    void vscode.window.showInformationMessage('Culprit: no supported remote commit URL found.')
+    return
+  }
+  await vscode.env.openExternal(vscode.Uri.parse(url))
+}
+
+function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
+  const info = blame.get(line)
+  if (!info) return { start: line, end: line }
+
+  let start = line
+  let end = line
+  while (blame.get(start - 1)?.sha === info.sha) start--
+  while (blame.get(end + 1)?.sha === info.sha) end++
+  return { start, end }
+}
+
+async function blameOptions(path: string, settings: Settings) {
+  if (!settings.ignoreRevsEnabled) return {}
+  const ignoreRevsFile = await defaultIgnoreRevsFile(path, settings.ignoreRevsFile)
+  return ignoreRevsFile ? { ignoreRevsFile } : {}
+}
+
+function readSettings(): Settings {
+  const cfg = vscode.workspace.getConfiguration('culprit')
+  return {
+    ignoreRevsEnabled: cfg.get<boolean>('ignoreRevs.enabled', true),
+    ignoreRevsFile: cfg.get<string>('ignoreRevs.file', '.git-blame-ignore-revs'),
+    authorFormat: cfg.get<AuthorFormat>('authorFormat', 'full'),
+    dateFormat: cfg.get<DateFormat>('dateFormat', 'relative'),
+    locale: cfg.get<string>('locale', ''),
+    summaryMaxLength: Math.max(20, Math.min(200, cfg.get<number>('summaryMaxLength', 50))),
+    inlineFormat: cfg.get<string>('inlineFormat', '${summary}, ${author} (${date})'),
+  }
+}
+
+function formatTemplate(template: string, context: BlameContext, settings: Settings): string {
+  const values: Record<string, string> = {
+    sha: context.info.sha.slice(0, 7),
+    fullSha: context.info.sha,
+    author: formatAuthor(context.info, settings),
+    date: formatDate(context.info.date, settings),
+    summary: firstLine(context.info.summary, settings.summaryMaxLength),
+    range: context.range.start === context.range.end ? `${context.range.start}` : `${context.range.start}-${context.range.end}`,
+  }
+
+  return template.replace(/\$\{(sha|fullSha|author|date|summary|range)\}/g, (_, key: string) => values[key] ?? '')
+}
+
+function formatAuthor(entry: Pick<BlameInfo, 'author' | 'authorEmail'>, settings: Settings): string {
+  if (settings.authorFormat === 'hidden') return ''
+  if (settings.authorFormat === 'email') return entry.authorEmail || entry.author
+  if (settings.authorFormat === 'first') return entry.author.split(/\s+/)[0] || entry.authorEmail
+  return entry.author
+}
+
+function formatAttribution(entry: Pick<BlameInfo, 'author' | 'authorEmail' | 'date'>, settings: Settings): string {
+  const author = formatAuthor(entry, settings)
+  const date = formatDate(entry.date, settings)
+  return author ? `${author} - ${date}` : date
+}
+
+function formatDate(date: Date, settings: Settings): string {
+  if (settings.dateFormat === 'absolute') return date.toLocaleString(settings.locale || undefined)
+  return relativeDate(date)
+}
+
 function registerGitWatchers() {
+  const generation = ++watcherGeneration
   disposeGitWatchers()
 
-  // Watches the conventional in-tree .git directory. For worktrees/submodules
-  // (where .git is a pointer file to an external gitdir) ref changes are not
-  // observed here; the CACHE_TTL backstop covers those cases.
   for (const folder of vscode.workspace.workspaceFolders ?? []) {
+    const gitFileWatcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, '.git'))
+    gitWatchers.push(
+      gitFileWatcher,
+      gitFileWatcher.onDidChange(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+      gitFileWatcher.onDidCreate(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+      gitFileWatcher.onDidDelete(() => {
+        scheduleGitInvalidation()
+        void registerGitWatchers()
+      }),
+    )
+
     for (const pattern of ['.git/HEAD', '.git/index', '.git/packed-refs', '.git/refs/heads/**']) {
       const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(folder, pattern))
       gitWatchers.push(
@@ -299,7 +427,48 @@ function registerGitWatchers() {
         watcher.onDidDelete(scheduleGitInvalidation),
       )
     }
+
+    void registerExternalGitDirWatchers(folder, generation)
   }
+}
+
+async function registerExternalGitDirWatchers(folder: vscode.WorkspaceFolder, generation: number) {
+  const gitDir = await externalGitDir(folder)
+  if (!gitDir || generation !== watcherGeneration) return
+
+  for (const pattern of ['HEAD', 'index', 'packed-refs', 'refs/heads/**']) {
+    const watcher = vscode.workspace.createFileSystemWatcher(new vscode.RelativePattern(vscode.Uri.file(gitDir), pattern))
+    if (generation !== watcherGeneration) {
+      watcher.dispose()
+      continue
+    }
+    gitWatchers.push(
+      watcher,
+      watcher.onDidChange(scheduleGitInvalidation),
+      watcher.onDidCreate(scheduleGitInvalidation),
+      watcher.onDidDelete(scheduleGitInvalidation),
+    )
+  }
+}
+
+async function externalGitDir(folder: vscode.WorkspaceFolder): Promise<string | undefined> {
+  try {
+    const gitFile = join(folder.uri.fsPath, '.git')
+    const raw = await readFile(gitFile, 'utf8')
+    const match = raw.match(/^gitdir:\s*(.+)\s*$/m)
+    if (!match) return undefined
+
+    const gitDir = match[1].trim()
+    const resolved = isAbsolute(gitDir) ? gitDir : resolve(dirname(gitFile), gitDir)
+    return isPlausibleGitDir(resolved) ? resolved : undefined
+  } catch {
+    return undefined
+  }
+}
+
+function isPlausibleGitDir(path: string): boolean {
+  const normalized = path.replace(/\\/g, '/')
+  return normalized.includes('/.git/') || normalized.endsWith('/.git') || normalized.endsWith('.git')
 }
 
 function disposeGitWatchers() {

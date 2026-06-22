@@ -5,7 +5,14 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 
-import { fileExistsInParent, fileHistory, isValidCommitSha } from '../src/git.js'
+import {
+  blameFile,
+  defaultIgnoreRevsFile,
+  fileExistsInParent,
+  fileHistory,
+  isValidCommitSha,
+  remoteCommitWebUrl,
+} from '../src/git.js'
 
 function git(cwd: string, args: string[]): string {
   return execFileSync('git', args, { cwd, encoding: 'utf8' }).trim()
@@ -69,4 +76,28 @@ test('fileHistory clamps unsafe max-count values', async () => {
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
   }
+})
+
+test('blameFile accepts a configured ignore-revs file when present', async () => {
+  const repo = createRepo()
+  const ignoreRevs = join(repo.dir, '.git-blame-ignore-revs')
+  try {
+    writeFileSync(ignoreRevs, `${repo.second}\n`)
+    const blame = await blameFile(repo.file, { ignoreRevsFile: ignoreRevs })
+    assert.equal(blame.size, 1)
+    assert.equal(await defaultIgnoreRevsFile(repo.file, '.git-blame-ignore-revs'), ignoreRevs)
+    assert.equal(await defaultIgnoreRevsFile(repo.file, '../outside'), undefined)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+  }
+})
+
+test('remoteCommitWebUrl supports common Git remote formats without executing remote data', () => {
+  const sha = 'a'.repeat(40)
+  assert.equal(remoteCommitWebUrl('git@github.com:goeselt/culprit.git', sha), `https://github.com/goeselt/culprit/commit/${sha}`)
+  assert.equal(remoteCommitWebUrl('https://gitlab.com/goeselt/culprit.git', sha), `https://gitlab.com/goeselt/culprit/commit/${sha}`)
+  assert.equal(remoteCommitWebUrl('ssh://git@bitbucket.org/goeselt/culprit.git', sha), `https://bitbucket.org/goeselt/culprit/commits/${sha}`)
+  assert.equal(remoteCommitWebUrl('javascript:alert(1)', sha), undefined)
+  assert.equal(remoteCommitWebUrl('git@github.com/evil:goeselt/culprit.git', sha), undefined)
+  assert.equal(remoteCommitWebUrl('git@github.com:goeselt/../culprit.git', sha), undefined)
 })

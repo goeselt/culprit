@@ -37,6 +37,53 @@
           "type": "boolean",
           "default": true,
           "description": "Enable inline blame annotations."
+        },
+        "culprit.ignoreRevs.enabled": {
+          "type": "boolean",
+          "default": true,
+          "description": "Respect an ignore-revs file when running git blame."
+        },
+        "culprit.ignoreRevs.file": {
+          "type": "string",
+          "default": ".git-blame-ignore-revs",
+          "description": "Repository-relative ignore-revs file used for git blame. Git's blame.ignoreRevsFile config is still respected by Git."
+        },
+        "culprit.inlineFormat": {
+          "type": "string",
+          "default": "${summary}, ${author} (${date})",
+          "description": "Inline blame format. Supports ${sha}, ${fullSha}, ${author}, ${date}, ${summary}, and ${range}."
+        },
+        "culprit.authorFormat": {
+          "type": "string",
+          "enum": [
+            "full",
+            "first",
+            "email",
+            "hidden"
+          ],
+          "default": "full",
+          "description": "Author display format."
+        },
+        "culprit.dateFormat": {
+          "type": "string",
+          "enum": [
+            "relative",
+            "absolute"
+          ],
+          "default": "relative",
+          "description": "Date display format."
+        },
+        "culprit.locale": {
+          "type": "string",
+          "default": "",
+          "description": "Locale used for absolute dates. Empty uses the VS Code runtime default."
+        },
+        "culprit.summaryMaxLength": {
+          "type": "number",
+          "default": 50,
+          "minimum": 20,
+          "maximum": 200,
+          "description": "Maximum commit summary length shown in inline, hover, and status bar text."
         }
       }
     }
