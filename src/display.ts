@@ -60,12 +60,6 @@ export function formatAuthor(entry: Pick<DisplayEntry, 'author' | 'authorEmail'>
   return author || email || UNKNOWN_AUTHOR
 }
 
-export function formatAttribution(entry: Pick<DisplayEntry, 'author' | 'authorEmail' | 'date'>, settings: DisplaySettings): string {
-  const author = formatAuthor(entry, settings)
-  const date = formatDate(entry.date, settings)
-  return author ? `${author} - ${date}` : date
-}
-
 export function formatDate(date: Date, settings: Pick<DisplaySettings, 'dateFormat' | 'locale'>): string {
   if (Number.isNaN(date.getTime())) return 'unknown date'
   if (settings.dateFormat !== 'absolute') return relativeDate(date)

@@ -4,7 +4,8 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   escapeMarkdown,
   firstLine,
-  formatAttribution,
+  formatAuthor,
+  formatDate,
   formatOwnershipRange,
   formatTemplate,
   type AuthorFormat,
@@ -291,21 +292,28 @@ function appendCommitHoverLine(
   settings: Settings,
 ) {
   const summary = escapeMarkdown(firstLine(entry.summary, settings.summaryMaxLength, 'No commit summary'))
-  const attribution = escapeMarkdown(formatAttribution(entry, settings))
+  const author = escapeMarkdown(formatAuthor(entry, settings))
+  const date = escapeMarkdown(formatDate(entry.date, settings))
+  const attribution = author ? `${author} $(clock) ${date}` : `$(clock) ${date}`
   md.appendMarkdown(
-    `${commitCompareAction(entry.sha, filePath)} **${summary}**\n\n${attribution} - ${commitUtilityActions(entry.sha, filePath)}\n\n`,
+    `${commitCompareAction(entry.sha, filePath)} ${copyShaAction(entry.sha, filePath)} ${summary} ${openRemoteAction(entry.sha, filePath)} (${attribution})  \n`,
   )
 }
 
 function commitCompareAction(sha: string, filePath: string): string {
   const args = encodeURIComponent(JSON.stringify([sha, filePath]))
   const short = sha.slice(0, 7)
-  return `[$(git-commit) ${short} Compare](command:culprit.showDiff?${args})`
+  return `[$(git-commit) \`${short}\`](command:culprit.showDiff?${args})`
 }
 
-function commitUtilityActions(sha: string, filePath: string): string {
+function copyShaAction(sha: string, filePath: string): string {
   const args = encodeURIComponent(JSON.stringify([sha, filePath]))
-  return `[$(copy) Copy SHA](command:culprit.copySha?${args}) - [$(link-external) Open Remote](command:culprit.openRemoteCommit?${args})`
+  return `[$(copy)](command:culprit.copySha?${args})`
+}
+
+function openRemoteAction(sha: string, filePath: string): string {
+  const args = encodeURIComponent(JSON.stringify([sha, filePath]))
+  return `[$(link-external)](command:culprit.openRemoteCommit?${args})`
 }
 
 async function refreshDecorationHover(editor: vscode.TextEditor, activeLine: number, context: BlameContext) {
