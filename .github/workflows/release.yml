@@ -54,11 +54,15 @@ jobs:
 
       - name: Install Dependencies
         if: steps.intent.outputs.release-needed == 'true'
-        run: npm ci
+        run: npm ci --ignore-scripts
 
       - name: Typecheck
         if: steps.intent.outputs.release-needed == 'true'
         run: npm run typecheck
+
+      - name: Test
+        if: steps.intent.outputs.release-needed == 'true'
+        run: npm test
 
       - name: Bump Version
         if: steps.intent.outputs.release-needed == 'true'
