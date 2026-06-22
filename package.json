@@ -83,7 +83,7 @@
           "default": 50,
           "minimum": 20,
           "maximum": 200,
-          "description": "Maximum commit summary length shown in inline, hover, and status bar text."
+          "description": "Maximum commit summary length shown in inline and hover text."
         }
       }
     }

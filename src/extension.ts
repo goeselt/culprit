@@ -21,6 +21,11 @@ const CACHE_TTL = 10 * 60_000
 const ERROR_CACHE_TTL = 5_000
 const MAX_BLAME_FILES = 200
 const MAX_HISTORY_CACHE_ENTRIES = 100
+const UPDATE_DEBOUNCE_MS = 150
+const GIT_INVALIDATION_DEBOUNCE_MS = 100
+const RECENT_FILE_COMMITS = 5
+const COPY_STATUS_TTL = 1_500
+const REMOTE_STATUS_TTL = 3_000
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
@@ -52,6 +57,8 @@ let watcherGeneration = 0
 let lastActiveLine = -1
 let lastActiveFile = ''
 
+// Extension lifecycle -------------------------------------------------------
+
 export function activate(ctx: vscode.ExtensionContext) {
   enabled = vscode.workspace.getConfiguration('culprit').get<boolean>('enabled', true)
 
@@ -82,8 +89,7 @@ export function activate(ctx: vscode.ExtensionContext) {
     vscode.workspace.onDidChangeTextDocument((e) => {
       const ed = vscode.window.activeTextEditor
       if (ed?.document !== e.document) return
-      lastActiveLine = -1
-      lastActiveFile = ''
+      resetActivePosition()
       if (e.document.isDirty) clearEditorDecorations(ed)
       else scheduleUpdate(ed)
     }),
@@ -91,7 +97,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       invalidateFile(doc.uri.fsPath)
       const ed = vscode.window.activeTextEditor
       if (ed?.document === doc) {
-        lastActiveLine = -1
+        resetActivePosition()
         scheduleUpdate(ed)
       }
     }),
@@ -101,7 +107,7 @@ export function activate(ctx: vscode.ExtensionContext) {
       const ed = vscode.window.activeTextEditor
       clearCaches()
       if (!ed) return
-      lastActiveLine = -1
+      resetActivePosition()
       if (enabled) scheduleUpdate(ed)
       else clearEditorDecorations(ed)
     }),
@@ -123,13 +129,15 @@ export function deactivate() {
   clearCaches()
 }
 
+// Active-line decoration lifecycle -----------------------------------------
+
 function toggleEnabled() {
   enabled = !enabled
   vscode.window.showInformationMessage(`Culprit: ${enabled ? 'enabled' : 'disabled'}`)
   void vscode.workspace.getConfiguration('culprit').update('enabled', enabled, vscode.ConfigurationTarget.Global)
   const ed = vscode.window.activeTextEditor
   if (!ed) return
-  lastActiveLine = -1
+  resetActivePosition()
   if (enabled) scheduleUpdate(ed)
   else clearEditorDecorations(ed)
 }
@@ -138,14 +146,13 @@ function scheduleUpdate(editor: vscode.TextEditor) {
   if (debounceTimer) clearTimeout(debounceTimer)
   debounceTimer = setTimeout(() => {
     void updateDecoration(editor)
-  }, 150)
+  }, UPDATE_DEBOUNCE_MS)
 }
 
 async function updateDecoration(editor: vscode.TextEditor) {
   if (!enabled || editor.document.uri.scheme !== 'file' || editor.document.isDirty) {
     clearEditorDecorations(editor)
-    lastActiveLine = -1
-    lastActiveFile = ''
+    resetActivePosition()
     return
   }
 
@@ -180,6 +187,8 @@ async function updateDecoration(editor: vscode.TextEditor) {
   if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, context)
 }
 
+// Git data access -----------------------------------------------------------
+
 function getFileBlame(path: string): Promise<FileBlame> {
   const cached = getCachedEntry(blameCache, path)
   if (cached) return Promise.resolve(cached.data)
@@ -213,7 +222,7 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
   if (cached) return Promise.resolve(cached.data)
 
   const generation = cacheGeneration
-  return fileHistory(path, 5)
+  return fileHistory(path, RECENT_FILE_COMMITS)
     .then((data) => {
       if (generation !== cacheGeneration) return []
       setCached(historyCache, path, data, MAX_HISTORY_CACHE_ENTRIES, CACHE_TTL)
@@ -224,6 +233,8 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
       return []
     })
 }
+
+// Hover and inline rendering ------------------------------------------------
 
 function buildHover(context: BlameContext): vscode.MarkdownString {
   const { info, fileEntries, filePath, range } = context
@@ -314,6 +325,8 @@ function clearInactiveEditorDecorations(activeEditor: vscode.TextEditor) {
   }
 }
 
+// Commands ------------------------------------------------------------------
+
 async function showDiff(sha: string, filePath: string) {
   if (!isValidCommitSha(sha) || !filePath) return
 
@@ -337,18 +350,20 @@ async function showDiff(sha: string, filePath: string) {
 async function copySha(sha: string) {
   if (!isValidCommitSha(sha)) return
   await vscode.env.clipboard.writeText(sha)
-  vscode.window.setStatusBarMessage(`Culprit: copied ${sha.slice(0, 7)}`, 1_500)
+  vscode.window.setStatusBarMessage(`Culprit: copied ${sha.slice(0, 7)}`, COPY_STATUS_TTL)
 }
 
 async function openRemoteCommit(sha: string, filePath: string) {
   if (!isValidCommitSha(sha) || !filePath) return
   const url = await remoteCommitUrl(sha, filePath)
   if (!url) {
-    vscode.window.setStatusBarMessage('Culprit: no supported remote commit URL found.', 3_000)
+    vscode.window.setStatusBarMessage('Culprit: no supported remote commit URL found.', REMOTE_STATUS_TTL)
     return
   }
   await vscode.env.openExternal(vscode.Uri.parse(url))
 }
+
+// Settings and formatting ---------------------------------------------------
 
 function ownershipRange(blame: FileBlame, line: number): OwnershipRange {
   const info = blame.get(line)
@@ -419,6 +434,8 @@ function formatDate(date: Date, settings: Settings): string {
   if (settings.dateFormat === 'absolute') return date.toLocaleString(settings.locale || undefined)
   return relativeDate(date)
 }
+
+// Git watcher invalidation --------------------------------------------------
 
 function registerGitWatchers() {
   const generation = ++watcherGeneration
@@ -507,10 +524,10 @@ function scheduleGitInvalidation() {
     clearCaches()
     const ed = vscode.window.activeTextEditor
     if (ed) {
-      lastActiveLine = -1
+      resetActivePosition()
       scheduleUpdate(ed)
     }
-  }, 100)
+  }, GIT_INVALIDATION_DEBOUNCE_MS)
 }
 
 function clearCaches() {
@@ -523,6 +540,13 @@ function clearCaches() {
 function invalidateFile(path: string) {
   blameCache.delete(path)
   historyCache.delete(path)
+}
+
+// Small utilities -----------------------------------------------------------
+
+function resetActivePosition() {
+  lastActiveLine = -1
+  lastActiveFile = ''
 }
 
 function getCachedEntry<T>(cache: Map<string, CacheEntry<T>>, key: string): CacheEntry<T> | undefined {
