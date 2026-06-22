@@ -27,6 +27,11 @@ export interface HistoryEntry {
   summary: string
 }
 
+export interface GitIdentity {
+  author: string
+  authorEmail: string
+}
+
 export interface BlameOptions {
   ignoreRevsFile?: string
 }
@@ -187,6 +192,17 @@ export async function remoteCommitUrl(sha: string, filePath: string): Promise<st
   } catch {
     return undefined
   }
+}
+
+export async function gitIdentity(filePath: string): Promise<GitIdentity | undefined> {
+  const cwd = dirname(filePath)
+  const [author, authorEmail] = await Promise.all([
+    run(['config', '--get', 'user.name'], cwd).catch(() => ''),
+    run(['config', '--get', 'user.email'], cwd).catch(() => ''),
+  ])
+
+  const identity = { author: author.trim(), authorEmail: authorEmail.trim() }
+  return identity.author || identity.authorEmail ? identity : undefined
 }
 
 export function remoteCommitWebUrl(remote: string, sha: string): string | undefined {

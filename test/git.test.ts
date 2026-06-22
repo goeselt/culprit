@@ -10,6 +10,7 @@ import {
   defaultIgnoreRevsFile,
   fileExistsInParent,
   fileHistory,
+  gitIdentity,
   isValidCommitSha,
   remoteCommitWebUrl,
 } from '../src/git.js'
@@ -73,6 +74,18 @@ test('fileHistory clamps unsafe max-count values', async () => {
     const entries = await fileHistory(repo.file, Number.POSITIVE_INFINITY)
     assert.equal(entries.length, 2)
     assert.equal(entries[0].sha, repo.second)
+  } finally {
+    rmSync(repo.dir, { recursive: true, force: true })
+  }
+})
+
+test('gitIdentity reads the local repository author configuration', async () => {
+  const repo = createRepo()
+  try {
+    assert.deepEqual(await gitIdentity(repo.file), {
+      author: 'Culprit Test',
+      authorEmail: 'culprit@example.invalid',
+    })
   } finally {
     rmSync(repo.dir, { recursive: true, force: true })
   }

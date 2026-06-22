@@ -2,9 +2,11 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 
 import {
+  authorTone,
   escapeMarkdown,
   firstLine,
   formatDate,
+  formatHoverAuthor,
   formatOwnershipRange,
   formatTemplate,
   type DisplaySettings,
@@ -82,4 +84,23 @@ test('small display helpers produce readable hover text', () => {
   assert.equal(formatOwnershipRange({ start: 7, end: 7 }), 'This commit owns line 7')
   assert.equal(formatOwnershipRange({ start: 7, end: 9 }), 'This commit owns lines 7-9')
   assert.equal(escapeMarkdown('fix <thing> (again)'), 'fix &lt;thing\\> \\(again\\)')
+})
+
+test('authorTone classifies current user, bots, and other authors', () => {
+  assert.equal(authorTone(context.info, { author: 'Ada Lovelace', authorEmail: '' }), 'self')
+  assert.equal(authorTone(context.info, { author: '', authorEmail: 'ada@example.invalid' }), 'self')
+  assert.equal(authorTone({ author: 'dependabot[bot]', authorEmail: '49699333+dependabot[bot]@users.noreply.github.com' }), 'bot')
+  assert.equal(authorTone(context.info, { author: 'Grace Hopper', authorEmail: 'grace@example.invalid' }), 'default')
+})
+
+test('formatHoverAuthor colors only current user and bot authors', () => {
+  assert.equal(
+    formatHoverAuthor(context.info, settings, { author: 'Ada Lovelace', authorEmail: 'ada@example.invalid' }),
+    '<span style="color:var(--vscode-terminal-ansiGreen);">You</span>',
+  )
+  assert.equal(
+    formatHoverAuthor({ author: 'renovate[bot]', authorEmail: 'bot@example.invalid' }, settings),
+    '<span style="color:var(--vscode-terminal-ansiBlue);">renovate[bot]</span>',
+  )
+  assert.equal(formatHoverAuthor(context.info, settings), 'Ada Lovelace')
 })

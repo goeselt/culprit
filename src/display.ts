@@ -25,9 +25,19 @@ export interface TemplateContext {
   range: OwnershipRange
 }
 
+export interface AuthorIdentity {
+  author: string
+  authorEmail: string
+}
+
+export type AuthorTone = 'self' | 'bot' | 'default'
+
 const ELLIPSIS = '...'
 const NO_COMMIT_SUMMARY = 'No commit summary'
 const UNKNOWN_AUTHOR = 'Unknown author'
+const SELF_AUTHOR_LABEL = 'You'
+const SELF_AUTHOR_COLOR = 'var(--vscode-terminal-ansiGreen)'
+const BOT_AUTHOR_COLOR = 'var(--vscode-terminal-ansiBlue)'
 const BIDI_CONTROL_RE = /[\u202A-\u202E\u2066-\u2069]/g
 const CONTROL_RE = /[\u0000-\u0008\u000B\u000C\u000E-\u001F\u007F]/g
 
@@ -58,6 +68,36 @@ export function formatAuthor(entry: Pick<DisplayEntry, 'author' | 'authorEmail'>
   if (settings.authorFormat === 'email') return email || author || UNKNOWN_AUTHOR
   if (settings.authorFormat === 'first') return author.split(/\s+/)[0] || email || UNKNOWN_AUTHOR
   return author || email || UNKNOWN_AUTHOR
+}
+
+export function formatHoverAuthor(
+  entry: Pick<DisplayEntry, 'author' | 'authorEmail'>,
+  settings: Pick<DisplaySettings, 'authorFormat'>,
+  identity?: AuthorIdentity,
+): string {
+  const author = formatAuthor(entry, settings)
+  if (!author) return ''
+
+  const tone = authorTone(entry, identity)
+  if (tone === 'default') return escapeMarkdown(author)
+
+  const color = tone === 'self' ? SELF_AUTHOR_COLOR : BOT_AUTHOR_COLOR
+  const label = tone === 'self' ? SELF_AUTHOR_LABEL : author
+  return `<span style="color:${color};">${escapeHtml(label)}</span>`
+}
+
+export function authorTone(entry: Pick<DisplayEntry, 'author' | 'authorEmail'>, identity?: AuthorIdentity): AuthorTone {
+  const author = normalizeDisplayText(entry.author).toLowerCase()
+  const email = normalizeDisplayText(entry.authorEmail).toLowerCase()
+
+  if (isBotAuthor(author, email)) return 'bot'
+  if (!identity) return 'default'
+
+  const identityAuthor = normalizeDisplayText(identity.author).toLowerCase()
+  const identityEmail = normalizeDisplayText(identity.authorEmail).toLowerCase()
+  if (identityEmail && email && identityEmail === email) return 'self'
+  if (identityAuthor && author && identityAuthor === author) return 'self'
+  return 'default'
 }
 
 export function formatDate(date: Date, settings: Pick<DisplaySettings, 'dateFormat' | 'locale'>): string {
@@ -100,6 +140,17 @@ export function escapeMarkdown(text: string): string {
     .replace(/&/g, '&amp;')
     .replace(/</g, '&lt;')
     .replace(/([\\`*_[\]{}()#+\-!|>~])/g, '\\$1')
+}
+
+function escapeHtml(text: string): string {
+  return normalizeDisplayText(text)
+    .replace(/&/g, '&amp;')
+    .replace(/</g, '&lt;')
+    .replace(/>/g, '&gt;')
+}
+
+function isBotAuthor(author: string, email: string): boolean {
+  return /\bbot\b|\[bot\]|bot@/.test(author) || /\bbot\b|\[bot\]|bot@/.test(email)
 }
 
 function tidyFormattedText(text: string): string {

@@ -4,10 +4,11 @@ import { basename, dirname, isAbsolute, join, resolve } from 'node:path'
 import {
   escapeMarkdown,
   firstLine,
-  formatAuthor,
   formatDate,
+  formatHoverAuthor,
   formatOwnershipRange,
   formatTemplate,
+  type AuthorIdentity,
   type AuthorFormat,
   type DateFormat,
   type DisplaySettings,
@@ -18,6 +19,7 @@ import {
   defaultIgnoreRevsFile,
   fileExistsInParent,
   fileHistory,
+  gitIdentity,
   isValidCommitSha,
   remoteCommitUrl,
   type BlameInfo,
@@ -33,6 +35,7 @@ const CACHE_TTL = 10 * 60_000
 const ERROR_CACHE_TTL = 5_000
 const MAX_BLAME_FILES = 200
 const MAX_HISTORY_CACHE_ENTRIES = 100
+const MAX_IDENTITY_CACHE_ENTRIES = 20
 const UPDATE_DEBOUNCE_MS = 150
 const GIT_INVALIDATION_DEBOUNCE_MS = 100
 const RECENT_FILE_COMMITS = 5
@@ -51,7 +54,13 @@ const MAX_MAX_FILE_LINES = 100_000
 
 type CacheEntry<T> = { data: T; expires: number }
 type FileBlame = Map<number, BlameInfo>
-type BlameContext = { info: BlameInfo; filePath: string; fileEntries: HistoryEntry[]; range: OwnershipRange }
+type BlameContext = {
+  info: BlameInfo
+  filePath: string
+  fileEntries: HistoryEntry[]
+  range: OwnershipRange
+  identity?: AuthorIdentity
+}
 type Settings = DisplaySettings & {
   ignoreRevsEnabled: boolean
   ignoreRevsFile: string
@@ -61,6 +70,7 @@ type Settings = DisplaySettings & {
 
 const blameCache = new Map<string, CacheEntry<FileBlame>>()
 const historyCache = new Map<string, CacheEntry<HistoryEntry[]>>()
+const identityCache = new Map<string, CacheEntry<AuthorIdentity | undefined>>()
 const refreshInFlight = new Map<string, Promise<FileBlame>>()
 const gitWatchers: vscode.Disposable[] = []
 
@@ -205,8 +215,10 @@ async function updateDecoration(editor: vscode.TextEditor) {
   const lineIdx = activeLine - 1
   const lineEnd = editor.document.lineAt(lineIdx).range.end
   const fileEntries = getCachedEntry(historyCache, path)?.data ?? []
+  const identity = await getGitIdentity(path)
+  if (vscode.window.activeTextEditor !== editor || editor.selection.active.line + 1 !== activeLine) return
   const range = ownershipRange(blame, activeLine)
-  const context = { info, filePath: path, fileEntries, range }
+  const context = { info, filePath: path, fileEntries, range, identity }
 
   setLineDecoration(editor, lineIdx, lineEnd.character, context)
   if (fileEntries.length === 0) void refreshDecorationHover(editor, activeLine, context)
@@ -258,6 +270,22 @@ function getFileHistory(path: string): Promise<HistoryEntry[]> {
     })
 }
 
+function getGitIdentity(path: string): Promise<AuthorIdentity | undefined> {
+  const cached = getCachedEntry(identityCache, path)
+  if (cached) return Promise.resolve(cached.data)
+
+  const generation = cacheGeneration
+  return gitIdentity(path)
+    .then((data) => {
+      if (generation === cacheGeneration) setCached(identityCache, path, data, MAX_IDENTITY_CACHE_ENTRIES, CACHE_TTL)
+      return data
+    })
+    .catch(() => {
+      if (generation === cacheGeneration) setCached(identityCache, path, undefined, MAX_IDENTITY_CACHE_ENTRIES, ERROR_CACHE_TTL)
+      return undefined
+    })
+}
+
 // Hover and inline rendering ------------------------------------------------
 
 function buildHover(context: BlameContext): vscode.MarkdownString {
@@ -265,10 +293,11 @@ function buildHover(context: BlameContext): vscode.MarkdownString {
   const settings = readSettings()
   const md = new vscode.MarkdownString(undefined, true)
   md.isTrusted = { enabledCommands: ['culprit.copySha', 'culprit.openRemoteCommit', 'culprit.showDiff'] }
+  md.supportHtml = true
   md.supportThemeIcons = true
 
   md.appendMarkdown('**Line Commit**\n\n')
-  appendCommitHoverLine(md, info, filePath, settings)
+  appendCommitHoverLine(md, info, filePath, settings, context.identity)
   md.appendMarkdown(`${escapeMarkdown(formatOwnershipRange(range))}\n\n`)
 
   // Skip the file-history section when it would just repeat the line commit:
@@ -278,7 +307,7 @@ function buildHover(context: BlameContext): vscode.MarkdownString {
     md.appendMarkdown('---\n\n')
     md.appendMarkdown('**Recent File Commits**\n\n')
     for (const e of fileEntries) {
-      appendCommitHoverLine(md, e, filePath, settings)
+      appendCommitHoverLine(md, e, filePath, settings, context.identity)
     }
   }
 
@@ -290,9 +319,10 @@ function appendCommitHoverLine(
   entry: Pick<BlameInfo, 'sha' | 'summary' | 'author' | 'authorEmail' | 'date'>,
   filePath: string,
   settings: Settings,
+  identity: AuthorIdentity | undefined,
 ) {
   const summary = escapeMarkdown(firstLine(entry.summary, settings.summaryMaxLength, 'No commit summary'))
-  const author = escapeMarkdown(formatAuthor(entry, settings))
+  const author = formatHoverAuthor(entry, settings, identity)
   const date = escapeMarkdown(formatDate(entry.date, settings))
   const attribution = author ? `${author} $(clock) ${date}` : `$(clock) ${date}`
   md.appendMarkdown(
@@ -568,6 +598,7 @@ function clearCaches() {
   cacheGeneration++
   blameCache.clear()
   historyCache.clear()
+  identityCache.clear()
   refreshInFlight.clear()
 }
 
