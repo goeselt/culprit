@@ -58,13 +58,13 @@ jobs:
       - name: Pedant
         id: pedant
         continue-on-error: true
-        uses: goeselt/pedant@a62f5beea373a55846791c2113ceacd07f114826 # v1.2.2
+        uses: goeselt/pedant@74965deb38735f0b01dcddce2f6e790feabdfcd9 # v1.4.0
         with:
           summary-github-step: true
 
       - name: Publish Pedant Report
         if: always()
-        uses: goeselt/remark@b5a3f7c0d7b25e6634f1f2f9ef13e6b808370972 # v1.0.3
+        uses: goeselt/remark@c2de02a492be4f6f11cd258c86e273a77186c86b # v1.0.5
         with:
           body: ${{ steps.pedant.outputs.summary }}
           comment-key: pedant
